@@ -6,7 +6,7 @@
   exact same tag on the Unraid host before applying this template.
 -->
 <Container version="2">
-  <Name>OpenClaw</Name>
+  <Name>openclaw</Name>
   <Repository>ghcr.io/cookiesncache/openclaw:latest</Repository>
   <Registry>https://github.com/cookiesncache/docker-openclaw/pkgs/container/openclaw</Registry>
   <Network>bridge</Network>
