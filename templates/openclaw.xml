@@ -19,7 +19,7 @@
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:18789]/</WebUI>
   <TemplateURL/>
-  <Icon>https://raw.githubusercontent.com/openclaw/openclaw/main/apps/ios/Sources/Assets.xcassets/AppIcon.appiconset/1024.png</Icon>
+  <Icon>https://raw.githubusercontent.com/selfhosters/unRAID-CA-templates/master/templates/img/openclaw.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <DonateText/>
