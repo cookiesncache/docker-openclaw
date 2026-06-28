@@ -21,6 +21,8 @@ This image adopts the LinuxServer permission model: a fixed internal user is rem
 
 - **`PUID`/`PGID`/`UMASK`** ownership handling — no manual `chown`
 - **s6-overlay** init and supervision
+- **Hardening knobs** — Control UI allowed-origins, an insecure-auth toggle, and a seeded auth rate limit
+- **Docker Mods, custom scripts/services, and `FILE__` secrets** — inherited from the LinuxServer base
 - Config, state and workspace persist under **`/config`**
 - Tracks upstream OpenClaw and is **rebuilt weekly** by CI
 - **amd64 only** (upstream publishes no arm64 image — see [Limitations](#limitations))
@@ -97,6 +99,48 @@ internet;** reach it through Tailscale or your proxy.
 `http://<ip>:18789` without a terminator. That accepts the token over plain HTTP — fine for a quick
 local start, but switch to the hardened settings above once you're reaching the UI over HTTPS. The
 image also seeds a default `auth.rateLimit` (brute-force throttling) when none is configured.
+
+## Hardening
+
+OpenClaw's Control UI / auth controls are exposed as variables, with safe defaults seeded for you:
+
+- **`OPENCLAW_ALLOW_INSECURE_AUTH`** — `true` by default for plain `http://<ip>:18789` access. Set
+  **`false`** behind a TLS terminator (Tailscale serve / reverse proxy) and open the UI via its
+  `https`/`wss` URL.
+- **`OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS`** — set to your UI URL so the Control UI enforces origin
+  checks (CSRF protection) instead of falling back to the Host header.
+- **`auth.rateLimit`** — a brute-force throttle (10 attempts / 60 s window / 5-min lockout) is seeded
+  automatically when none is configured. A value you set yourself is never overridden.
+
+Recommended for any networked deployment:
+
+```yaml
+environment:
+  - OPENCLAW_ALLOW_INSECURE_AUTH=false
+  - OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=https://openclaw.<your-tailnet>.ts.net
+```
+
+…and reach the UI through Tailscale / your reverse proxy — never expose port `18789` to the internet.
+
+## LinuxServer features
+
+Built on the LinuxServer base image, so the standard LinuxServer tooling works out of the box:
+
+- **Docker Mods** — add packages/tweaks at startup without rebuilding:
+  `DOCKER_MODS=linuxserver/mods:universal-…` (pipe-separate multiple mods).
+- **Custom scripts & services** — executables mounted into `/custom-cont-init.d` run at startup;
+  `/custom-services.d` holds long-running services.
+- **Secrets from files (`FILE__`)** — keep secrets out of plaintext env by pointing a `FILE__`-prefixed
+  variable at a file whose contents become the value (works with Docker secrets):
+
+  ```yaml
+  - FILE__OPENCLAW_GATEWAY_TOKEN=/run/secrets/openclaw_token
+  - FILE__ANTHROPIC_API_KEY=/run/secrets/anthropic_key
+  ```
+- **User / group identifiers** — `PUID`/`PGID` set who owns `/config` (find yours with `id youruser`;
+  Unraid uses `99`/`100`); `UMASK` controls created-file permissions.
+
+See [LinuxServer's documentation](https://docs.linuxserver.io/) for Docker Mods and container customization.
 
 ## Updating
 
