@@ -44,6 +44,9 @@ RUN \
 # prebuilt OpenClaw application (node_modules compiled against Node 24 / glibc)
 COPY --from=upstream /app /app
 
+# preserve OpenClaw's MIT notice alongside the bundled application (MIT requires it)
+COPY THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
+
 # s6 service definitions + first-run init
 COPY root/ /
 RUN chmod +x \

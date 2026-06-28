@@ -110,5 +110,11 @@ compliance notes are documented in [NOTES.md](NOTES.md).
 
 ## License
 
-[GPL-3.0](LICENSE), mirroring LinuxServer.io's licensing. OpenClaw itself is licensed separately by its
-authors — see [openclaw/openclaw](https://github.com/openclaw/openclaw).
+The packaging in this repository — Dockerfile, s6 service definitions, and the Unraid template — is
+licensed under [GPL-3.0](LICENSE), mirroring LinuxServer.io's licensing.
+
+This image **bundles and redistributes OpenClaw**, which is licensed under the **MIT License**
+(© 2026 OpenClaw Foundation). That notice is preserved in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and at `/licenses` inside the image. See
+[openclaw/openclaw](https://github.com/openclaw/openclaw) for upstream sources and their own
+third-party notices.
