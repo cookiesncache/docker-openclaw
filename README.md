@@ -66,6 +66,7 @@ A full `docker-compose.yml` (with the optional provider keys) and an `.env.examp
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token (**required**). Generate: `openssl rand -hex 24`. |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (optional). |
 | `OPENCLAW_ALLOW_INSECURE_AUTH` | `true` | Allow the Control UI to authenticate over plain HTTP — see below. |
+| `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` | — | Comma-separated allowed origins for the Control UI (CSRF protection). Set to the URL you reach the UI from. |
 
 Additional optional provider keys / bot tokens are also passed through:
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY`,
@@ -80,15 +81,22 @@ Additional optional provider keys / bot tokens are also passed through:
 
 ### Accessing the Control UI
 
-The gateway always serves **plain HTTP** — it does not terminate TLS itself. HTTPS comes from a front
-terminator (Tailscale serve or a reverse proxy), which is where your real encryption lives.
-`OPENCLAW_ALLOW_INSECURE_AUTH` defaults to **`true`**, which lets the gateway accept the loopback
-connection proxied from that terminator. This is the normal, correct setting.
+The gateway serves **plain HTTP** and does not terminate TLS itself — HTTPS comes from a front
+terminator (Tailscale serve or a reverse proxy). **Do not expose port `18789` directly to the
+internet;** reach it through Tailscale or your proxy.
 
-**Do not expose port `18789` directly to the internet** — always put it behind Tailscale or a reverse
-proxy. Setting `false` does **not** add security behind a terminator: the gateway only ever sees
-localhost HTTP, so `false` makes it reject connections it can't observe as TLS and simply breaks
-access. Only use `false` if TLS genuinely terminates at the gateway process itself.
+**Hardened setup (recommended):**
+
+- Set **`OPENCLAW_ALLOW_INSECURE_AUTH=false`**. Behind a TLS terminator the gateway recognizes the
+  connection as secure, so this works as long as you open the UI via its **https/wss URL** (e.g.
+  `https://openclaw.<tailnet>.ts.net/`) — not a plain `http://<ip>:18789` URL.
+- Set **`OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS`** to that same URL so the Control UI enforces origin
+  checks (CSRF protection) instead of falling back to the Host header.
+
+`OPENCLAW_ALLOW_INSECURE_AUTH` defaults to **`true`** so the UI works out of the box over plain
+`http://<ip>:18789` without a terminator. That accepts the token over plain HTTP — fine for a quick
+local start, but switch to the hardened settings above once you're reaching the UI over HTTPS. The
+image also seeds a default `auth.rateLimit` (brute-force throttling) when none is configured.
 
 ## Updating
 

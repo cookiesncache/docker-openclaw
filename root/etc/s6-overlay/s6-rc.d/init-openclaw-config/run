@@ -12,22 +12,38 @@ if [[ ! -f /config/.openclaw/openclaw.json ]]; then
     cp /defaults/openclaw.json /config/.openclaw/openclaw.json
 fi
 
-# Auth posture is env-driven: OPENCLAW_ALLOW_INSECURE_AUTH (default TRUE). The gateway only ever
-# serves plain HTTP; HTTPS comes from a front terminator (Tailscale serve / reverse proxy), where
-# the real encryption lives. TRUE lets the gateway accept that loopback-proxied connection -- the
-# normal, correct setting. FALSE makes it reject anything it can't see as TLS; behind a terminator
-# it only sees localhost HTTP, so FALSE just breaks access (it adds no security here). Enforced
-# every boot so the variable stays authoritative; all other config fields are preserved.
-echo "**** applying OPENCLAW_ALLOW_INSECURE_AUTH=${OPENCLAW_ALLOW_INSECURE_AUTH:-true} ****"
+# Apply security-relevant Control UI / auth config each boot. Env-driven settings stay
+# authoritative; the rate-limit default is only seeded when absent (never overrides yours).
+#   OPENCLAW_ALLOW_INSECURE_AUTH         accept auth over plain HTTP. Default true for direct
+#                                        LAN-HTTP access; set false (recommended) behind a TLS
+#                                        terminator (Tailscale serve / reverse proxy), reaching
+#                                        the UI via its https/wss URL.
+#   OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS  comma-separated allowed origins for the Control UI
+#                                        (CSRF/origin protection on a non-loopback bind), e.g.
+#                                        https://openclaw.<tailnet>.ts.net
+echo "**** applying control-UI/auth config (insecureAuth=${OPENCLAW_ALLOW_INSECURE_AUTH:-true}) ****"
 node -e '
   const fs = require("fs"), p = "/config/.openclaw/openclaw.json";
   try {
-    const raw = (process.env.OPENCLAW_ALLOW_INSECURE_AUTH ?? "true").toLowerCase();
-    const insecure = !["false","0","no","off"].includes(raw);
     const c = JSON.parse(fs.readFileSync(p, "utf8"));
     c.gateway = c.gateway || {};
-    c.gateway.controlUi = c.gateway.controlUi || {};
-    c.gateway.controlUi.allowInsecureAuth = insecure;
+    const ui = c.gateway.controlUi = c.gateway.controlUi || {};
+    const auth = c.gateway.auth = c.gateway.auth || {};
+
+    // allowInsecureAuth: env-authoritative, default true
+    const raw = (process.env.OPENCLAW_ALLOW_INSECURE_AUTH ?? "true").toLowerCase();
+    ui.allowInsecureAuth = !["false","0","no","off"].includes(raw);
+
+    // allowedOrigins: set only when provided (comma-separated)
+    const origins = (process.env.OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS || "")
+      .split(",").map(s => s.trim()).filter(Boolean);
+    if (origins.length) ui.allowedOrigins = origins;
+
+    // auth.rateLimit: seed a sane default if unset; never override a user-set value
+    if (auth.rateLimit == null) {
+      auth.rateLimit = { maxAttempts: 10, windowMs: 60000, lockoutMs: 300000 };
+    }
+
     fs.writeFileSync(p, JSON.stringify(c));
   } catch (e) { console.log("WARN: could not patch openclaw.json: " + e.message); }
 '

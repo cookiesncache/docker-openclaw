@@ -13,9 +13,12 @@ services:
       - TZ=America/New_York
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # Leave true: the gateway serves plain HTTP; your HTTPS comes from a front terminator
-      # (Tailscale serve / reverse proxy). false just breaks access behind a terminator.
+      # Auth over plain HTTP. Default true for direct LAN-HTTP access; set false (recommended)
+      # behind a TLS terminator (Tailscale serve / reverse proxy), opening the UI via its https URL.
       - OPENCLAW_ALLOW_INSECURE_AUTH=true
+      # Control UI allowed origins (CSRF protection). Set to the URL you reach the UI from,
+      # e.g. https://openclaw.YOUR-TAILNET.ts.net  (comma-separated for multiple).
+      - OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS:-}
       # Optional extra provider keys / bot tokens (set in .env if used):
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}

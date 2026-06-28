@@ -49,12 +49,20 @@ is high-maintenance, so the copy approach is used instead. Consequences:
 
 ## Auth posture
 
-`openclaw.json` is seeded on first run from `root/defaults/openclaw.json`. The `controlUi.allowInsecureAuth`
-field is driven by `OPENCLAW_ALLOW_INSECURE_AUTH` (default `true`) and re-applied on every boot by the
-config oneshot, so the variable stays authoritative. Default `true` is correct because the gateway
-always serves plain HTTP and relies on a front terminator (Tailscale serve / reverse proxy) for TLS —
-it cannot observe the edge TLS, so `false` would reject those proxied connections and only makes sense
-if TLS terminates at the gateway process itself (not OpenClaw's model).
+`openclaw.json` is seeded on first run from `root/defaults/openclaw.json`. The config oneshot then
+applies security-relevant settings on every boot:
+
+- `controlUi.allowInsecureAuth` ← `OPENCLAW_ALLOW_INSECURE_AUTH` (default `true`). The gateway serves
+  plain HTTP; behind a TLS terminator (Tailscale serve / reverse proxy) it recognizes the proxied
+  connection as secure, so `false` is the hardened, recommended setting **when the UI is reached via
+  its https/wss URL**. `true` accepts the token over plain HTTP — the convenience default for direct
+  LAN-HTTP access without a terminator (OpenClaw's health check flags `true` as a debug-grade flag).
+- `controlUi.allowedOrigins` ← `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` (comma-separated; unset by
+  default). Set to the URL the UI is reached from, for CSRF/origin protection on a non-loopback bind.
+- `auth.rateLimit` is seeded to a sane default (`maxAttempts 10 / windowMs 60000 / lockoutMs 300000`)
+  when none is configured, for brute-force throttling. A user-set value is never overridden.
+
+Env-driven fields stay authoritative across restarts; the rate-limit default is set-if-missing only.
 
 ## LinuxServer conventions
 
