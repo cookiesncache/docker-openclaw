@@ -14,11 +14,11 @@
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/cookiesncache/docker-openclaw/issues</Support>
-  <Project>https://github.com/openclaw/openclaw</Project>
-  <Overview>Self-hosted, LinuxServer.io-style image for the OpenClaw gateway. Uses the PUID/PGID + s6-overlay model so /config is owned by your chosen UID/GID with no manual chown. On Unraid keep PUID=99 / PGID=100 to match appdata ownership. Provide a gateway token and (optionally) an Anthropic API key. The Control UI is served on port 18789. NOTE: allowInsecureAuth is enabled by default for trusted LAN / Tailscale use - do not expose this port to the public internet.</Overview>
+  <Project>https://github.com/cookiesncache/docker-openclaw</Project>
+  <Overview>Unofficial, LinuxServer.io-style Docker image for the OpenClaw AI assistant gateway (upstream: https://github.com/openclaw/openclaw) - not affiliated with OpenClaw or LinuxServer.io. Uses the PUID/PGID + s6-overlay model so /config is owned by your chosen UID/GID with no manual chown; on Unraid keep PUID=99 / PGID=100 to match appdata ownership. Provide a gateway token and (optionally) an Anthropic API key. The Control UI is served on port 18789. Auth posture is controlled by OPENCLAW_ALLOW_INSECURE_AUTH (default true, intended for use behind a TLS terminator such as Tailscale serve or a reverse proxy) - do not expose port 18789 directly to the internet. amd64 only; image tracks upstream and is rebuilt weekly.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:18789]/</WebUI>
-  <TemplateURL/>
+  <TemplateURL>https://raw.githubusercontent.com/cookiesncache/docker-openclaw/main/templates/openclaw.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/selfhosters/unRAID-CA-templates/master/templates/img/openclaw.png</Icon>
   <ExtraParams/>
   <PostArgs/>
