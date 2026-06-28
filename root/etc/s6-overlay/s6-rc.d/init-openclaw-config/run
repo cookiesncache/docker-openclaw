@@ -1,0 +1,19 @@
+#!/usr/bin/with-contenv bash
+
+# Ensure the config/state/workspace tree exists on the /config volume.
+# HOME=/config, so OpenClaw resolves ~/.openclaw to /config/.openclaw.
+mkdir -p \
+    /config/.openclaw/state \
+    /config/.openclaw/workspace
+
+# Seed a sane gateway config on first run (LAN-reachable + token auth).
+# allowInsecureAuth is fine behind a trusted LAN / Tailscale tailnet, NOT public exposure.
+if [[ ! -f /config/.openclaw/openclaw.json ]]; then
+    echo "**** first run: seeding default openclaw.json ****"
+    cat > /config/.openclaw/openclaw.json <<'EOF'
+{"gateway":{"mode":"local","bind":"lan","controlUi":{"allowInsecureAuth":true},"auth":{"mode":"token"}}}
+EOF
+fi
+
+# Hand the tree to the runtime user (abc, remapped to PUID/PGID by the base init).
+lsiown -R abc:abc /config/.openclaw

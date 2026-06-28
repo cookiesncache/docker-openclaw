@@ -1,0 +1,6 @@
+# Force LF on all checkouts. Authoring on Windows must NOT introduce CRLF into the
+# s6 run scripts: a trailing \r turns "#!/usr/bin/with-contenv bash" into an invalid
+# interpreter path and the service silently fails to start.
+* text=auto eol=lf
+*.sh text eol=lf
+root/** text eol=lf

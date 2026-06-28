@@ -1,0 +1,86 @@
+# docker-openclaw
+
+> **Status: scaffolded, not yet built/tested.** A self-hosted, [LinuxServer.io](https://www.linuxserver.io/)-style
+> Docker image for the [OpenClaw](https://github.com/openclaw/openclaw) gateway. Built for our own use —
+> *not* dependent on LinuxServer adopting it — but following their `PUID`/`PGID` + s6-overlay + `/config`
+> conventions. No Docker on the authoring machine, so it must be built on a host (e.g. the Unraid box).
+
+## Why this exists
+
+The official image (`ghcr.io/openclaw/openclaw:latest`) runs as a fixed `uid 1000` and writes state to
+`$HOME/.openclaw`. On hosts where the bind mount isn't owned by 1000 (e.g. Unraid `appdata`, `99:100`),
+the gateway boots then dies:
+
+```
+EACCES: permission denied, mkdir '/home/node/.openclaw/state'
+```
+
+This image adopts the LinuxServer permission model: a fixed internal user (`abc`) is remapped to your
+`PUID`/`PGID` at startup and `/config` is chowned for you — so the error can't happen. See
+[NOTES.md](NOTES.md) for the full upstream facts and the debugging history behind this.
+
+## How it's built (architecture)
+
+Multi-stage, **amd64-only** (upstream publishes no arm64 yet):
+
+1. **`upstream` stage** — `ghcr.io/openclaw/openclaw:latest`, used only as a source to copy the
+   prebuilt `/app` (its `dist/` + pruned `node_modules`, including the native state-DB module).
+2. **final stage** — `ghcr.io/linuxserver/baseimage-ubuntu:noble`. Installs **Node 24** (matching
+   upstream's ABI so the copied native module loads), copies `/app`, and adds an s6 service.
+
+`HOME=/config`, so OpenClaw's `~/.openclaw` resolves onto the persistent volume at
+`/config/.openclaw/{openclaw.json,state,workspace}`.
+
+```
+root/etc/s6-overlay/s6-rc.d/
+├── init-openclaw-config/   oneshot: mkdir tree, seed openclaw.json, lsiown to abc
+├── svc-openclaw/           longrun: s6-setuidgid abc → node openclaw.mjs gateway --bind lan
+└── user/contents.d/        registers both in the user bundle
+```
+
+> **ABI warning:** the base must stay glibc (Ubuntu/Debian) and Node must stay major **24**. An Alpine
+> (musl) base or a different Node major will make the prebuilt state-DB `.node` binary crash on load.
+
+## Build & run
+
+```bash
+# clone onto the Docker host, then:
+cd docker-openclaw
+cp .env.example .env          # set OPENCLAW_GATEWAY_TOKEN + ANTHROPIC_API_KEY
+docker compose build
+docker compose up -d
+docker compose logs -f        # watch it boot; expect the OpenClaw banner + a listening line
+```
+
+Then open `http://<host-ip>:18789/`.
+
+### Unraid notes
+
+- Set `PUID=99` / `PGID=100` (nobody:users) in the compose/template so it matches `appdata` ownership —
+  no `chown` ever needed.
+- Map `/config` → `/mnt/user/appdata/openclaw`.
+- For Tailscale, layer Unraid's Tailscale toggle on top (Post Arguments = flags only, never shell).
+
+## Status / TODO
+
+- [x] Confirm no existing `linuxserver/openclaw` (it's an open slot; other community images aren't LSIO-style).
+- [x] Decide build strategy: copy prebuilt `/app` from upstream onto the LSIO base (see [NOTES.md](NOTES.md)).
+- [x] Scaffold Dockerfile + s6-overlay v3 service tree + compose/env.
+- [ ] **Build & smoke-test on the Unraid host** (first real validation).
+- [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
+- [ ] Decide whether to pin upstream by digest instead of `:latest` for reproducibility.
+- [ ] Optional: GitHub Actions to rebuild on upstream releases; publish to own GHCR.
+- [ ] arm64 — blocked on upstream ([openclaw#41881](https://github.com/openclaw/openclaw/issues/41881)).
+
+## Notes on LinuxServer.io adoption
+
+Not being pursued — upstream didn't read as receptive and we'd rather not depend on a third party.
+The conventions are still followed, so if that changes the repo is already shaped for it. Process and
+requirements are recorded in the git history of this file / [NOTES.md](NOTES.md) if ever revisited.
+
+## Sources
+
+- [openclaw/openclaw](https://github.com/openclaw/openclaw) · [docs](https://docs.openclaw.ai/install/docker)
+- [docker-project-template](https://github.com/linuxserver/docker-project-template) ·
+  [Understanding PUID/PGID](https://docs.linuxserver.io/general/understanding-puid-and-pgid/) ·
+  [s6-overlay](https://github.com/just-containers/s6-overlay)

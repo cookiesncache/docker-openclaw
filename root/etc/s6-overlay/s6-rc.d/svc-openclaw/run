@@ -1,0 +1,10 @@
+#!/usr/bin/with-contenv bash
+
+cd /app || exit 1
+
+# Drop from root to abc (== PUID/PGID) and start the gateway.
+# --bind lan is required or the gateway listens on 127.0.0.1 and is unreachable
+# through Docker port forwarding.
+exec \
+    s6-setuidgid abc \
+        node openclaw.mjs gateway --bind lan --port 18789

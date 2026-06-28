@@ -1,0 +1,20 @@
+---
+services:
+  openclaw:
+    build: .
+    image: openclaw:lsio
+    container_name: openclaw
+    environment:
+      # Unraid: PUID=99 / PGID=100 (nobody:users) so it matches appdata ownership.
+      # Standard Linux host: PUID=1000 / PGID=1000.
+      - PUID=99
+      - PGID=100
+      - UMASK=022
+      - TZ=America/New_York
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./config:/config
+    ports:
+      - 18789:18789
+    restart: unless-stopped
