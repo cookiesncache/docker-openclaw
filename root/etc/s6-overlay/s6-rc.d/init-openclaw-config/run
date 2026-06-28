@@ -12,11 +12,12 @@ if [[ ! -f /config/.openclaw/openclaw.json ]]; then
     cp /defaults/openclaw.json /config/.openclaw/openclaw.json
 fi
 
-# Auth posture is env-driven: OPENCLAW_ALLOW_INSECURE_AUTH (default TRUE). True lets the
-# Control UI authenticate over plain HTTP -- what you want when TLS is terminated in front
-# (Tailscale serve / reverse proxy), where the gateway only ever sees localhost HTTP. Set
-# false to require HTTPS at the gateway itself. Enforced every boot so the variable stays
-# authoritative; all other fields in the config are preserved.
+# Auth posture is env-driven: OPENCLAW_ALLOW_INSECURE_AUTH (default TRUE). The gateway only ever
+# serves plain HTTP; HTTPS comes from a front terminator (Tailscale serve / reverse proxy), where
+# the real encryption lives. TRUE lets the gateway accept that loopback-proxied connection -- the
+# normal, correct setting. FALSE makes it reject anything it can't see as TLS; behind a terminator
+# it only sees localhost HTTP, so FALSE just breaks access (it adds no security here). Enforced
+# every boot so the variable stays authoritative; all other config fields are preserved.
 echo "**** applying OPENCLAW_ALLOW_INSECURE_AUTH=${OPENCLAW_ALLOW_INSECURE_AUTH:-true} ****"
 node -e '
   const fs = require("fs"), p = "/config/.openclaw/openclaw.json";

@@ -51,8 +51,10 @@ is high-maintenance, so the copy approach is used instead. Consequences:
 
 `openclaw.json` is seeded on first run from `root/defaults/openclaw.json`. The `controlUi.allowInsecureAuth`
 field is driven by `OPENCLAW_ALLOW_INSECURE_AUTH` (default `true`) and re-applied on every boot by the
-config oneshot, so the variable stays authoritative. Default `true` suits a gateway running HTTP behind
-a TLS terminator (Tailscale serve / reverse proxy); set `false` to require HTTPS at the gateway itself.
+config oneshot, so the variable stays authoritative. Default `true` is correct because the gateway
+always serves plain HTTP and relies on a front terminator (Tailscale serve / reverse proxy) for TLS —
+it cannot observe the edge TLS, so `false` would reject those proxied connections and only makes sense
+if TLS terminates at the gateway process itself (not OpenClaw's model).
 
 ## LinuxServer conventions
 

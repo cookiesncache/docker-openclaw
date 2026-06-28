@@ -80,12 +80,15 @@ Additional optional provider keys / bot tokens are also passed through:
 
 ### Accessing the Control UI
 
-The gateway listens on plain HTTP. `OPENCLAW_ALLOW_INSECURE_AUTH` defaults to **`true`**, which is
-correct when TLS is terminated **in front** of the container (Tailscale serve, or a reverse proxy):
-the edge provides HTTPS and the gateway only sees localhost HTTP.
+The gateway always serves **plain HTTP** — it does not terminate TLS itself. HTTPS comes from a front
+terminator (Tailscale serve or a reverse proxy), which is where your real encryption lives.
+`OPENCLAW_ALLOW_INSECURE_AUTH` defaults to **`true`**, which lets the gateway accept the loopback
+connection proxied from that terminator. This is the normal, correct setting.
 
-**Do not expose port `18789` directly to the internet.** Put it behind Tailscale or a reverse proxy.
-If you terminate HTTPS at the gateway itself, set `OPENCLAW_ALLOW_INSECURE_AUTH=false`.
+**Do not expose port `18789` directly to the internet** — always put it behind Tailscale or a reverse
+proxy. Setting `false` does **not** add security behind a terminator: the gateway only ever sees
+localhost HTTP, so `false` makes it reject connections it can't observe as TLS and simply breaks
+access. Only use `false` if TLS genuinely terminates at the gateway process itself.
 
 ## Updating
 

@@ -13,8 +13,8 @@ services:
       - TZ=America/New_York
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # Auth posture. Default true: gateway runs HTTP behind a TLS terminator (Tailscale serve /
-      # reverse proxy). Set false only to require HTTPS at the gateway itself.
+      # Leave true: the gateway serves plain HTTP; your HTTPS comes from a front terminator
+      # (Tailscale serve / reverse proxy). false just breaks access behind a terminator.
       - OPENCLAW_ALLOW_INSECURE_AUTH=true
       # Optional extra provider keys / bot tokens (set in .env if used):
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
