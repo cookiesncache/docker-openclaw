@@ -73,3 +73,31 @@ Constraints this locks in:
 
 Fallback if the copy ever breaks (native module won't load): rebuild from source on the LSIO base,
 or `npm rebuild` the offending module against the local Node.
+
+## LinuxServer compliance (adversarial audit, 2026-06-28)
+
+Audited against live LSIO sources (baseimage-ubuntu noble s6 tree, docker-code-server, docker-jellyfin,
+s6-overlay v3). Grade: ~B-/B as a self-hosted LSIO-*style* image (not built for official adoption).
+Note: `linuxserver/docker-project-template` is stale (s6 v2), so v3 conventions were anchored to mature
+images instead.
+
+Fixed:
+- **F1 (HIGH, real defect):** services must gate on the base `init-services` bundle, and app config
+  oneshots link into `init-config-end`. Was: `svc-openclaw` depended directly on `init-openclaw-config`
+  and never on `init-services` → latent start-order race (breaks under Docker Mods / custom-files).
+  Now: `svc-openclaw/dependencies.d/init-services` + `init-config-end/dependencies.d/init-openclaw-config`.
+- **F7 (idiom):** seed config moved from an inline heredoc to `root/defaults/openclaw.json` (LSIO
+  `/defaults` pattern); the oneshot now `cp`s it.
+- **F5:** added `.dockerignore` so `.git`/`.env` never enter the build context.
+
+Correct already (audit-confirmed): `HOME=/config` idiom, PUID/PGID/UMASK/TZ delegation, service naming,
+shebangs, `up`→`run` indirection, LF + committed exec bits, no secrets, RUN step-marker style, no
+CMD/ENTRYPOINT (s6 `/init` is PID 1).
+
+Deferred (decisions / out of scope):
+- **F2/F3:** copy-from-upstream + `:latest` — pin by digest (capture at build time). Copy-from-image is
+  an adoption-blocker but a deliberate, documented self-host trade-off.
+- **F7 security:** `allowInsecureAuth: true` kept as the default for the trusted LAN/Tailscale use case;
+  could be gated behind an env var.
+- **Adoption-only (not pursued):** Jenkinsfile, jenkins-vars.yml, package_versions.txt, readme-vars.yml,
+  Dockerfile.aarch64/arm64, `.github` templates, the LSIO LABEL string, LICENSE.

@@ -6,13 +6,12 @@ mkdir -p \
     /config/.openclaw/state \
     /config/.openclaw/workspace
 
-# Seed a sane gateway config on first run (LAN-reachable + token auth).
-# allowInsecureAuth is fine behind a trusted LAN / Tailscale tailnet, NOT public exposure.
+# Seed the default gateway config on first run, from /defaults (LSIO idiom).
+# The default enables allowInsecureAuth for trusted LAN / Tailscale use; edit
+# /config/.openclaw/openclaw.json to change it (the seed is first-run only).
 if [[ ! -f /config/.openclaw/openclaw.json ]]; then
-    echo "**** first run: seeding default openclaw.json ****"
-    cat > /config/.openclaw/openclaw.json <<'EOF'
-{"gateway":{"mode":"local","bind":"lan","controlUi":{"allowInsecureAuth":true},"auth":{"mode":"token"}}}
-EOF
+    echo "**** first run: seeding default openclaw.json from /defaults ****"
+    cp /defaults/openclaw.json /config/.openclaw/openclaw.json
 fi
 
 # Hand the tree to the runtime user (abc, remapped to PUID/PGID by the base init).

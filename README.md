@@ -106,12 +106,15 @@ the template in the "Add Container" dropdown without CA.
 - [x] Decide build strategy: copy prebuilt `/app` from upstream onto the LSIO base (see [NOTES.md](NOTES.md)).
 - [x] Scaffold Dockerfile + s6-overlay v3 service tree + compose/env.
 - [x] Author the Unraid Community Apps template ([templates/openclaw.xml](templates/openclaw.xml)).
+- [x] Adversarial LSIO audit; fixed s6 dep wiring (F1), seed→`/defaults` (F7), `.dockerignore` (F5). See [NOTES.md](NOTES.md).
 - [ ] **Build & smoke-test on the Unraid host** (first real validation).
 - [ ] Push the image to GHCR and make the package Public (so the template can pull).
 - [ ] Drop the template in `community.applications/private/` on Unraid and install.
 - [ ] Add an `icon.png` to the repo root for the CA tile.
 - [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
-- [ ] Decide whether to pin upstream by digest instead of `:latest` for reproducibility.
+- [ ] Pin upstream by digest instead of `:latest` (audit F2/F3 — capture the digest at build time).
+- [ ] Decide `allowInsecureAuth` default (audit F7 — currently `true` for LAN/Tailscale; gate via env?).
+- [ ] Add a `LICENSE` (audit F5).
 - [ ] Optional: GitHub Actions to rebuild on upstream releases; publish to own GHCR.
 - [ ] arm64 — blocked on upstream ([openclaw#41881](https://github.com/openclaw/openclaw/issues/41881)).
 
