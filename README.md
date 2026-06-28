@@ -116,17 +116,17 @@ the template in the "Add Container" dropdown without CA.
 - [x] Scaffold Dockerfile + s6-overlay v3 service tree + compose/env.
 - [x] Author the Unraid Community Apps template ([templates/openclaw.xml](templates/openclaw.xml)).
 - [x] Adversarial LSIO audit; fixed s6 dep wiring (F1), seed→`/defaults` (F7), `.dockerignore` (F5). See [NOTES.md](NOTES.md).
-- [ ] **Build & smoke-test on the Unraid host** (first real validation).
-- [ ] Push the image to GHCR and make the package Public (so the template can pull).
-- [ ] Drop the template in `community.applications/private/` on Unraid and install.
+- [x] Built via CI + runs on Unraid — first start clean (ABI held, PUID/PGID works, no EACCES).
+- [x] Image builds + pushes to GHCR via CI; package made Public.
+- [x] Template installed via CA `private/` and running.
 - [x] Point the CA tile `<Icon>` at the official OpenClaw CA icon (`selfhosters/unRAID-CA-templates`), matching the official tile.
 - [x] Preserve the original optional provider keys / bot tokens in the template (transparency).
-- [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
-- [ ] Pin upstream by digest instead of `:latest` (audit F2/F3 — capture the digest at build time).
+- [x] Native state-DB module loads on Noble/Node 24 — ABI assumption confirmed on first start.
+- [x] Decision: stay on `:latest`, track upstream via the weekly CI rebuild (auto-updates chosen over reproducibility) — closes audit F2/F3.
 - [x] Gate `allowInsecureAuth` behind `OPENCLAW_ALLOW_INSECURE_AUTH` (default `true`; TLS terminated in front) (audit F7).
 - [x] Add GPL-3.0 `LICENSE` mirroring LinuxServer (audit F5).
 - [x] GitHub Actions builds + pushes to GHCR ([.github/workflows/build.yml](.github/workflows/build.yml)); weekly upstream rebuild.
-- [ ] Make the GHCR `openclaw` package **Public** (one-time, after first build) so Unraid can pull.
+- [x] GHCR `openclaw` package made **Public** so Unraid can pull.
 - [ ] arm64 — blocked on upstream ([openclaw#41881](https://github.com/openclaw/openclaw/issues/41881)).
 
 ## Notes on LinuxServer.io adoption
