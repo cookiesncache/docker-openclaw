@@ -12,14 +12,17 @@ if [[ ! -f /config/.openclaw/openclaw.json ]]; then
     cp /defaults/openclaw.json /config/.openclaw/openclaw.json
 fi
 
-# Auth posture is env-driven: OPENCLAW_ALLOW_INSECURE_AUTH (default false = require
-# HTTPS/secure auth). Set true only for plain-HTTP LAN access. Enforced every boot so
-# the variable stays authoritative; all other fields in the config are preserved.
-echo "**** applying OPENCLAW_ALLOW_INSECURE_AUTH=${OPENCLAW_ALLOW_INSECURE_AUTH:-false} ****"
+# Auth posture is env-driven: OPENCLAW_ALLOW_INSECURE_AUTH (default TRUE). True lets the
+# Control UI authenticate over plain HTTP -- what you want when TLS is terminated in front
+# (Tailscale serve / reverse proxy), where the gateway only ever sees localhost HTTP. Set
+# false to require HTTPS at the gateway itself. Enforced every boot so the variable stays
+# authoritative; all other fields in the config are preserved.
+echo "**** applying OPENCLAW_ALLOW_INSECURE_AUTH=${OPENCLAW_ALLOW_INSECURE_AUTH:-true} ****"
 node -e '
   const fs = require("fs"), p = "/config/.openclaw/openclaw.json";
   try {
-    const insecure = ["true","1","yes"].includes((process.env.OPENCLAW_ALLOW_INSECURE_AUTH || "").toLowerCase());
+    const raw = (process.env.OPENCLAW_ALLOW_INSECURE_AUTH ?? "true").toLowerCase();
+    const insecure = !["false","0","no","off"].includes(raw);
     const c = JSON.parse(fs.readFileSync(p, "utf8"));
     c.gateway = c.gateway || {};
     c.gateway.controlUi = c.gateway.controlUi || {};

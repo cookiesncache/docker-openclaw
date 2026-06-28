@@ -33,5 +33,16 @@
   <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone (e.g. America/New_York)." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
   <Config Name="Gateway Token" Target="OPENCLAW_GATEWAY_TOKEN" Default="" Mode="" Description="Auth token for the gateway. Generate one with: openssl rand -hex 24" Type="Variable" Display="always" Required="true" Mask="true"/>
   <Config Name="Anthropic API Key" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Anthropic API key (sk-ant-...). Leave blank if configured another way." Type="Variable" Display="always" Required="false" Mask="true"/>
-  <Config Name="Allow Insecure Auth" Target="OPENCLAW_ALLOW_INSECURE_AUTH" Default="false" Mode="" Description="Set true ONLY for plain-HTTP LAN access. Default false requires HTTPS/secure auth (reach the UI via a reverse proxy or Tailscale serve)." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Allow Insecure Auth" Target="OPENCLAW_ALLOW_INSECURE_AUTH" Default="true" Mode="" Description="Allow the Control UI to authenticate over plain HTTP. Default true: correct when TLS is terminated in front (Tailscale serve / reverse proxy) and the gateway only sees localhost HTTP. Set false only to require HTTPS at the gateway itself." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <!-- Optional extra provider keys / bot tokens, preserved from the original OpenClaw template for transparency. All optional, masked, empty by default. -->
+  <Config Name="OpenAI API Key" Target="OPENAI_API_KEY" Default="" Mode="" Description="Optional. OpenAI API key, if using OpenAI models." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="OpenRouter API Key" Target="OPENROUTER_API_KEY" Default="" Mode="" Description="Optional. OpenRouter API key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Gemini API Key" Target="GEMINI_API_KEY" Default="" Mode="" Description="Optional. Google Gemini API key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Groq API Key" Target="GROQ_API_KEY" Default="" Mode="" Description="Optional. Groq API key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="xAI API Key" Target="XAI_API_KEY" Default="" Mode="" Description="Optional. xAI (Grok) API key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Z.AI API Key" Target="ZAI_API_KEY" Default="" Mode="" Description="Optional. Z.AI API key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Copilot GitHub Token" Target="COPILOT_GITHUB_TOKEN" Default="" Mode="" Description="Optional. GitHub token for Copilot models." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Discord Bot Token" Target="DISCORD_BOT_TOKEN" Default="" Mode="" Description="Optional. Discord bot token for the Discord channel." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Telegram Bot Token" Target="TELEGRAM_BOT_TOKEN" Default="" Mode="" Description="Optional. Telegram bot token for the Telegram channel." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+  <Config Name="Brave API Key" Target="BRAVE_API_KEY" Default="" Mode="" Description="Optional. Brave Search API key for web search." Type="Variable" Display="advanced" Required="false" Mask="true"/>
 </Container>

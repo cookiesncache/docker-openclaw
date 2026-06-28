@@ -66,9 +66,9 @@ Then open `http://<host-ip>:18789/`.
   no `chown` ever needed.
 - Map `/config` → `/mnt/user/appdata/openclaw`.
 - For Tailscale, layer Unraid's Tailscale toggle on top (Post Arguments = flags only, never shell).
-- **Auth posture is a variable:** `OPENCLAW_ALLOW_INSECURE_AUTH` defaults to `false` (require
-  HTTPS/secure auth — reach the UI via Tailscale serve or a reverse proxy). Set it `true` only for
-  direct plain-HTTP LAN access on `http://<ip>:18789`.
+- **Auth posture is a variable:** `OPENCLAW_ALLOW_INSECURE_AUTH` defaults to `true` — the gateway runs
+  HTTP behind a TLS terminator (Tailscale serve / reverse proxy) that provides real HTTPS, so the
+  gateway only ever sees localhost HTTP. Set it `false` only to require HTTPS at the gateway itself.
 
 ## Deploy on Unraid (Community Apps)
 
@@ -119,10 +119,11 @@ the template in the "Add Container" dropdown without CA.
 - [ ] **Build & smoke-test on the Unraid host** (first real validation).
 - [ ] Push the image to GHCR and make the package Public (so the template can pull).
 - [ ] Drop the template in `community.applications/private/` on Unraid and install.
-- [ ] Add an `icon.png` to the repo root for the CA tile.
+- [x] Add `icon.png` for the CA tile.
+- [x] Preserve the original optional provider keys / bot tokens in the template (transparency).
 - [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
 - [ ] Pin upstream by digest instead of `:latest` (audit F2/F3 — capture the digest at build time).
-- [x] Gate `allowInsecureAuth` behind `OPENCLAW_ALLOW_INSECURE_AUTH` (default `false` = secure) (audit F7).
+- [x] Gate `allowInsecureAuth` behind `OPENCLAW_ALLOW_INSECURE_AUTH` (default `true`; TLS terminated in front) (audit F7).
 - [x] Add GPL-3.0 `LICENSE` mirroring LinuxServer (audit F5).
 - [x] GitHub Actions builds + pushes to GHCR ([.github/workflows/build.yml](.github/workflows/build.yml)); weekly upstream rebuild.
 - [ ] Make the GHCR `openclaw` package **Public** (one-time, after first build) so Unraid can pull.

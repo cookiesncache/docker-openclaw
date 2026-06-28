@@ -97,7 +97,8 @@ CMD/ENTRYPOINT (s6 `/init` is PID 1).
 Deferred (decisions / out of scope):
 - **F2/F3:** copy-from-upstream + `:latest` — pin by digest (capture at build time). Copy-from-image is
   an adoption-blocker but a deliberate, documented self-host trade-off.
-- **F7 security (RESOLVED):** `allowInsecureAuth` is now gated behind `OPENCLAW_ALLOW_INSECURE_AUTH`
-  (default `false` = secure); the config oneshot enforces it into openclaw.json on every boot via node.
+- **F7 security (RESOLVED):** `allowInsecureAuth` is gated behind `OPENCLAW_ALLOW_INSECURE_AUTH`
+  (default `true` — gateway runs HTTP behind a TLS terminator like Tailscale serve / reverse proxy);
+  the config oneshot enforces it into openclaw.json on every boot via node.
 - **Adoption-only (not pursued):** Jenkinsfile, jenkins-vars.yml, package_versions.txt, readme-vars.yml,
   Dockerfile.aarch64/arm64, `.github` templates, the LSIO LABEL string, LICENSE.
