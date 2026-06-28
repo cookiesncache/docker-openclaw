@@ -108,6 +108,11 @@ docker build -t ghcr.io/cookiesncache/openclaw:latest .
 Design decisions, the upstream-image facts, the native-module ABI constraints, and the LinuxServer
 compliance notes are documented in [NOTES.md](NOTES.md).
 
+## Support
+
+- Unraid forum thread: <https://forums.unraid.net/topic/199671-support-openclaw-linuxserverio-style-openclaw-gateway-unofficial/>
+- GitHub issues: <https://github.com/cookiesncache/docker-openclaw/issues>
+
 ## License
 
 The packaging in this repository — Dockerfile, s6 service definitions, and the Unraid template — is
