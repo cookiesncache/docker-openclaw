@@ -9,3 +9,4 @@ config/
 *.md
 docker-compose.yml
 templates/
+LICENSE

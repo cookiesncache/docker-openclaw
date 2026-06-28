@@ -7,12 +7,26 @@ mkdir -p \
     /config/.openclaw/workspace
 
 # Seed the default gateway config on first run, from /defaults (LSIO idiom).
-# The default enables allowInsecureAuth for trusted LAN / Tailscale use; edit
-# /config/.openclaw/openclaw.json to change it (the seed is first-run only).
 if [[ ! -f /config/.openclaw/openclaw.json ]]; then
     echo "**** first run: seeding default openclaw.json from /defaults ****"
     cp /defaults/openclaw.json /config/.openclaw/openclaw.json
 fi
+
+# Auth posture is env-driven: OPENCLAW_ALLOW_INSECURE_AUTH (default false = require
+# HTTPS/secure auth). Set true only for plain-HTTP LAN access. Enforced every boot so
+# the variable stays authoritative; all other fields in the config are preserved.
+echo "**** applying OPENCLAW_ALLOW_INSECURE_AUTH=${OPENCLAW_ALLOW_INSECURE_AUTH:-false} ****"
+node -e '
+  const fs = require("fs"), p = "/config/.openclaw/openclaw.json";
+  try {
+    const insecure = ["true","1","yes"].includes((process.env.OPENCLAW_ALLOW_INSECURE_AUTH || "").toLowerCase());
+    const c = JSON.parse(fs.readFileSync(p, "utf8"));
+    c.gateway = c.gateway || {};
+    c.gateway.controlUi = c.gateway.controlUi || {};
+    c.gateway.controlUi.allowInsecureAuth = insecure;
+    fs.writeFileSync(p, JSON.stringify(c));
+  } catch (e) { console.log("WARN: could not patch openclaw.json: " + e.message); }
+'
 
 # Hand the tree to the runtime user (abc, remapped to PUID/PGID by the base init).
 lsiown -R abc:abc /config/.openclaw

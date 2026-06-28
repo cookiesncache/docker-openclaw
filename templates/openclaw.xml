@@ -33,4 +33,5 @@
   <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone (e.g. America/New_York)." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
   <Config Name="Gateway Token" Target="OPENCLAW_GATEWAY_TOKEN" Default="" Mode="" Description="Auth token for the gateway. Generate one with: openssl rand -hex 24" Type="Variable" Display="always" Required="true" Mask="true"/>
   <Config Name="Anthropic API Key" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Anthropic API key (sk-ant-...). Leave blank if configured another way." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Allow Insecure Auth" Target="OPENCLAW_ALLOW_INSECURE_AUTH" Default="false" Mode="" Description="Set true ONLY for plain-HTTP LAN access. Default false requires HTTPS/secure auth (reach the UI via a reverse proxy or Tailscale serve)." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
 </Container>

@@ -1,5 +1,9 @@
 # docker-openclaw
 
+> ⚠️ **Unofficial, LinuxServer.io-*style* image — not affiliated with, maintained by, or endorsed by
+> [LinuxServer.io](https://www.linuxserver.io/).** It follows their `PUID`/`PGID` + s6-overlay + `/config`
+> conventions and mirrors their GPL-3.0 license, but is an independent, self-hosted build.
+
 > **Status: scaffolded, not yet built/tested.** A self-hosted, [LinuxServer.io](https://www.linuxserver.io/)-style
 > Docker image for the [OpenClaw](https://github.com/openclaw/openclaw) gateway. Built for our own use —
 > *not* dependent on LinuxServer adopting it — but following their `PUID`/`PGID` + s6-overlay + `/config`
@@ -60,6 +64,9 @@ Then open `http://<host-ip>:18789/`.
   no `chown` ever needed.
 - Map `/config` → `/mnt/user/appdata/openclaw`.
 - For Tailscale, layer Unraid's Tailscale toggle on top (Post Arguments = flags only, never shell).
+- **Auth posture is a variable:** `OPENCLAW_ALLOW_INSECURE_AUTH` defaults to `false` (require
+  HTTPS/secure auth — reach the UI via Tailscale serve or a reverse proxy). Set it `true` only for
+  direct plain-HTTP LAN access on `http://<ip>:18789`.
 
 ## Deploy on Unraid (Community Apps)
 
@@ -113,8 +120,8 @@ the template in the "Add Container" dropdown without CA.
 - [ ] Add an `icon.png` to the repo root for the CA tile.
 - [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
 - [ ] Pin upstream by digest instead of `:latest` (audit F2/F3 — capture the digest at build time).
-- [ ] Decide `allowInsecureAuth` default (audit F7 — currently `true` for LAN/Tailscale; gate via env?).
-- [ ] Add a `LICENSE` (audit F5).
+- [x] Gate `allowInsecureAuth` behind `OPENCLAW_ALLOW_INSECURE_AUTH` (default `false` = secure) (audit F7).
+- [x] Add GPL-3.0 `LICENSE` mirroring LinuxServer (audit F5).
 - [ ] Optional: GitHub Actions to rebuild on upstream releases; publish to own GHCR.
 - [ ] arm64 — blocked on upstream ([openclaw#41881](https://github.com/openclaw/openclaw/issues/41881)).
 
@@ -123,6 +130,12 @@ the template in the "Add Container" dropdown without CA.
 Not being pursued — upstream didn't read as receptive and we'd rather not depend on a third party.
 The conventions are still followed, so if that changes the repo is already shaped for it. Process and
 requirements are recorded in the git history of this file / [NOTES.md](NOTES.md) if ever revisited.
+
+## License
+
+[GPL-3.0](LICENSE), mirroring [LinuxServer.io's licensing](https://github.com/linuxserver). This is an
+independent, **unofficial** project — not affiliated with or endorsed by LinuxServer.io. OpenClaw itself
+is licensed separately by its authors; see [openclaw/openclaw](https://github.com/openclaw/openclaw).
 
 ## Sources
 
