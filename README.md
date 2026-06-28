@@ -119,7 +119,7 @@ the template in the "Add Container" dropdown without CA.
 - [ ] **Build & smoke-test on the Unraid host** (first real validation).
 - [ ] Push the image to GHCR and make the package Public (so the template can pull).
 - [ ] Drop the template in `community.applications/private/` on Unraid and install.
-- [x] Point the CA tile `<Icon>` at OpenClaw's upstream logomark (`docs/assets/pixel-lobster.svg`) — sourced from their repo, no local copy.
+- [x] Point the CA tile `<Icon>` at OpenClaw's official app icon (`apps/ios/.../AppIcon.appiconset/1024.png`), sourced live from their repo.
 - [x] Preserve the original optional provider keys / bot tokens in the template (transparency).
 - [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
 - [ ] Pin upstream by digest instead of `:latest` (audit F2/F3 — capture the digest at build time).
