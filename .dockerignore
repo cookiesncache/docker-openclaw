@@ -10,4 +10,3 @@ config/
 docker-compose.yml
 templates/
 LICENSE
-icon.png
