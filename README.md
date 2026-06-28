@@ -1,5 +1,7 @@
 # docker-openclaw
 
+[![build](https://github.com/cookiesncache/docker-openclaw/actions/workflows/build.yml/badge.svg)](https://github.com/cookiesncache/docker-openclaw/actions/workflows/build.yml)
+
 > ⚠️ **Unofficial, LinuxServer.io-*style* image — not affiliated with, maintained by, or endorsed by
 > [LinuxServer.io](https://www.linuxserver.io/).** It follows their `PUID`/`PGID` + s6-overlay + `/config`
 > conventions and mirrors their GPL-3.0 license, but is an independent, self-hosted build.
@@ -122,7 +124,8 @@ the template in the "Add Container" dropdown without CA.
 - [ ] Pin upstream by digest instead of `:latest` (audit F2/F3 — capture the digest at build time).
 - [x] Gate `allowInsecureAuth` behind `OPENCLAW_ALLOW_INSECURE_AUTH` (default `false` = secure) (audit F7).
 - [x] Add GPL-3.0 `LICENSE` mirroring LinuxServer (audit F5).
-- [ ] Optional: GitHub Actions to rebuild on upstream releases; publish to own GHCR.
+- [x] GitHub Actions builds + pushes to GHCR ([.github/workflows/build.yml](.github/workflows/build.yml)); weekly upstream rebuild.
+- [ ] Make the GHCR `openclaw` package **Public** (one-time, after first build) so Unraid can pull.
 - [ ] arm64 — blocked on upstream ([openclaw#41881](https://github.com/openclaw/openclaw/issues/41881)).
 
 ## Notes on LinuxServer.io adoption
