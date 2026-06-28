@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Community Applications template for the LinuxServer-style OpenClaw image.
+  Deploy: see the "Deploy on Unraid (Community Apps)" section of ../README.md.
+  The <Repository> image must be pullable (push to GHCR) or built locally with the
+  exact same tag on the Unraid host before applying this template.
+-->
+<Container version="2">
+  <Name>OpenClaw</Name>
+  <Repository>ghcr.io/cookiesncache/openclaw:latest</Repository>
+  <Registry>https://github.com/cookiesncache/docker-openclaw/pkgs/container/openclaw</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/cookiesncache/docker-openclaw/issues</Support>
+  <Project>https://github.com/openclaw/openclaw</Project>
+  <Overview>Self-hosted, LinuxServer.io-style image for the OpenClaw gateway. Uses the PUID/PGID + s6-overlay model so /config is owned by your chosen UID/GID with no manual chown. On Unraid keep PUID=99 / PGID=100 to match appdata ownership. Provide a gateway token and (optionally) an Anthropic API key. The Control UI is served on port 18789. NOTE: allowInsecureAuth is enabled by default for trusted LAN / Tailscale use - do not expose this port to the public internet.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:18789]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/cookiesncache/docker-openclaw/main/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>LinuxServer.io-style OpenClaw gateway (PUID/PGID + s6-overlay). Config, state and workspace persist under /config.</Description>
+  <Config Name="WebUI Port" Target="18789" Default="18789" Mode="tcp" Description="OpenClaw gateway / Control UI port" Type="Port" Display="always" Required="true" Mask="false">18789</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/openclaw" Mode="rw" Description="Persistent config, state and workspace (the container's ~/.openclaw lives here)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/openclaw</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID that owns /config. Unraid default: 99 (nobody)." Type="Variable" Display="always" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID that owns /config. Unraid default: 100 (users)." Type="Variable" Display="always" Required="true" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="Umask for files the container creates." Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+  <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone (e.g. America/New_York)." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+  <Config Name="Gateway Token" Target="OPENCLAW_GATEWAY_TOKEN" Default="" Mode="" Description="Auth token for the gateway. Generate one with: openssl rand -hex 24" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="Anthropic API Key" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Anthropic API key (sk-ant-...). Leave blank if configured another way." Type="Variable" Display="always" Required="false" Mask="true"/>
+</Container>

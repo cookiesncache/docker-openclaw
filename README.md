@@ -61,12 +61,55 @@ Then open `http://<host-ip>:18789/`.
 - Map `/config` → `/mnt/user/appdata/openclaw`.
 - For Tailscale, layer Unraid's Tailscale toggle on top (Post Arguments = flags only, never shell).
 
+## Deploy on Unraid (Community Apps)
+
+The Unraid template is [`templates/openclaw.xml`](templates/openclaw.xml). It drives the Docker UI
+(port, `/config`, PUID/PGID, token, API key) and is what makes the app show up in Community Apps (CA).
+
+**Prerequisite — the image must be pullable.** Unraid pulls `<Repository>` when you apply a template,
+so push the image to a registry first. GHCR matches the `cookiesncache` identity and the planned
+Actions build:
+
+```bash
+# on the Unraid host (once the repo is on GitHub):
+git clone https://github.com/cookiesncache/docker-openclaw.git
+cd docker-openclaw
+docker build -t ghcr.io/cookiesncache/openclaw:latest .
+echo "$GHCR_PAT" | docker login ghcr.io -u cookiesncache --password-stdin
+docker push ghcr.io/cookiesncache/openclaw:latest    # then mark the GHCR package Public
+```
+
+**Surface it in Community Apps — two options:**
+
+1. **Private (immediate, no moderation) — recommended for personal use.** Copy the template onto the
+   box; CA lists it when you search `private`:
+   ```bash
+   mkdir -p /boot/config/plugins/community.applications/private
+   cp templates/openclaw.xml /boot/config/plugins/community.applications/private/
+   ```
+   CA → search **private** → **OpenClaw** → Install → fill in token/key → Apply.
+
+2. **Public (moderated, optional, later).** Keep the template in this public repo, then request
+   addition to the CA app feed via the Unraid forum template-repositories thread. After approval it
+   appears in CA search for everyone.
+
+You can also add this repo's URL under **Docker → Docker Repositories → Template repositories** to get
+the template in the "Add Container" dropdown without CA.
+
+> Building locally on Unraid with the **exact** tag in `<Repository>` can work, but a pushed (Public)
+> GHCR package is the reliable path — Unraid's apply step tries to pull and a missing registry image
+> can fail the install.
+
 ## Status / TODO
 
 - [x] Confirm no existing `linuxserver/openclaw` (it's an open slot; other community images aren't LSIO-style).
 - [x] Decide build strategy: copy prebuilt `/app` from upstream onto the LSIO base (see [NOTES.md](NOTES.md)).
 - [x] Scaffold Dockerfile + s6-overlay v3 service tree + compose/env.
+- [x] Author the Unraid Community Apps template ([templates/openclaw.xml](templates/openclaw.xml)).
 - [ ] **Build & smoke-test on the Unraid host** (first real validation).
+- [ ] Push the image to GHCR and make the package Public (so the template can pull).
+- [ ] Drop the template in `community.applications/private/` on Unraid and install.
+- [ ] Add an `icon.png` to the repo root for the CA tile.
 - [ ] Confirm the native state-DB module loads on Noble/Node 24 (the ABI assumption).
 - [ ] Decide whether to pin upstream by digest instead of `:latest` for reproducibility.
 - [ ] Optional: GitHub Actions to rebuild on upstream releases; publish to own GHCR.
