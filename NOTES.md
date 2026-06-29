@@ -80,6 +80,12 @@ Note: `linuxserver/docker-project-template` is on the legacy s6-overlay v2 layou
 here follow current mature LinuxServer images (e.g. `docker-code-server`, `docker-jellyfin`) and the
 baseimage's own `s6-rc.d` tree.
 
+**Custom-image branding (required for non-official images on the LSIO base).** Per LinuxServer's
+[container-branding docs](https://docs.linuxserver.io/general/container-branding/), an image built on
+their base must replace the startup banner so it doesn't misrepresent LinuxServer. This image ships
+`root/etc/s6-overlay/s6-rc.d/init-adduser/branding` with its own banner (clearly marked unofficial /
+not affiliated) and sets `ENV LSIO_FIRST_PARTY=false` so the base init does not overwrite it.
+
 ## Open upstream issues to track
 
 - [openclaw#41881](https://github.com/openclaw/openclaw/issues/41881) — multi-arch (arm64/armv7) builds.

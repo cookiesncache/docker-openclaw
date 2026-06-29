@@ -15,9 +15,12 @@ LABEL build_version="docker-openclaw version:- ${VERSION} built:- ${BUILD_DATE}"
 LABEL maintainer="simsc"
 
 # HOME=/config so OpenClaw's $HOME-relative ~/.openclaw lands on the persistent volume.
+# LSIO_FIRST_PARTY=false: this is a custom/unofficial image on the LSIO base, so the base
+# init must not overwrite our own init-adduser/branding (see container-branding docs).
 ENV HOME="/config" \
     NODE_ENV="production" \
-    OPENCLAW_DISABLE_BONJOUR="true"
+    OPENCLAW_DISABLE_BONJOUR="true" \
+    LSIO_FIRST_PARTY="false"
 
 RUN \
   echo "**** install runtime packages ****" && \
