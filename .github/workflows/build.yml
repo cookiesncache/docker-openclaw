@@ -15,6 +15,7 @@ on:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/openclaw
+  UPSTREAM: ghcr.io/openclaw/openclaw:latest
 
 jobs:
   build:
@@ -36,11 +37,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build metadata
+      - name: Metadata + upstream version
         id: meta
         run: |
           echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          docker pull -q "$UPSTREAM"
+          # Resolve the upstream OpenClaw version (for a pinnable tag). Try the CLI,
+          # then package.json, then an OCI label; leave blank if none can be read.
+          VER=$(timeout 30 docker run --rm --entrypoint node "$UPSTREAM" /app/openclaw.mjs --version 2>/dev/null \
+                | grep -oiE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
+          if [ -z "$VER" ]; then
+            VER=$(docker run --rm --entrypoint cat "$UPSTREAM" /app/package.json 2>/dev/null \
+                  | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
+          fi
+          if [ -z "$VER" ]; then
+            VER=$(docker inspect "$UPSTREAM" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "Upstream OpenClaw version: ${VER:-unknown}"
+
+      - name: Compute tags
+        id: tags
+        run: |
+          TAGS="${IMAGE}:latest,${IMAGE}:${{ steps.meta.outputs.sha }}"
+          if [ -n "${{ steps.meta.outputs.version }}" ]; then
+            TAGS="${TAGS},${IMAGE}:${{ steps.meta.outputs.version }}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Tags: ${TAGS}"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -50,11 +75,9 @@ jobs:
           platforms: linux/amd64
           push: true
           provenance: false          # single-arch image, not a manifest list (cleaner for Unraid)
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.date }}
-            VERSION=${{ steps.meta.outputs.sha }}
+            VERSION=${{ steps.meta.outputs.version || steps.meta.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

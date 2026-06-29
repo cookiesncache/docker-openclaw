@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Unraid support thread
+    url: https://forums.unraid.net/topic/199671-support-openclaw-linuxserverio-style-openclaw-gateway-unofficial/
+    about: Ask for help or discuss this image on the Unraid forums.
+  - name: OpenClaw (upstream) issues
+    url: https://github.com/openclaw/openclaw/issues
+    about: For bugs in OpenClaw itself, rather than this packaging.

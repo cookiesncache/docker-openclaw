@@ -148,6 +148,10 @@ CI rebuilds and pushes `ghcr.io/cookiesncache/openclaw:latest` weekly (and on ev
 upstream OpenClaw releases. On Unraid, enable **CA Auto Update Applications** to pull new images
 automatically.
 
+**Tags:** `:latest` tracks upstream. Each build also publishes a version tag matching the upstream
+OpenClaw release (e.g. `ghcr.io/cookiesncache/openclaw:2026.6.10`) plus a short-commit tag — pin one of
+those for reproducibility.
+
 ## Limitations
 
 - **amd64 only.** The image copies OpenClaw's prebuilt application (including a native module) from the
@@ -167,6 +171,15 @@ compliance notes are documented in [NOTES.md](NOTES.md).
 
 - Unraid forum thread: <https://forums.unraid.net/topic/199671-support-openclaw-linuxserverio-style-openclaw-gateway-unofficial/>
 - GitHub issues: <https://github.com/cookiesncache/docker-openclaw/issues>
+
+Useful diagnostics:
+
+```bash
+docker logs -f openclaw                                                   # live logs
+docker exec -it openclaw bash                                            # shell into the container
+docker inspect -f '{{ index .Config.Labels "build_version" }}' openclaw  # image build version
+docker exec -it openclaw node /app/openclaw.mjs --version                # OpenClaw version
+```
 
 ## License
 
