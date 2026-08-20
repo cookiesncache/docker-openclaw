@@ -9,13 +9,19 @@ on:
       - '.dockerignore'
       - '.github/workflows/build.yml'
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild and push even if no build input changed'
+        type: boolean
+        default: false
   schedule:
-    # Weekly rebuild to pick up upstream openclaw:latest + base-image updates.
+    # Weekly check against upstream openclaw + the LSIO base image.
     - cron: '0 6 * * 1'
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/openclaw
   UPSTREAM: ghcr.io/openclaw/openclaw:latest
+  BASE: ghcr.io/linuxserver/baseimage-ubuntu:noble
 
 jobs:
   build:
@@ -37,8 +43,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ---------------------------------------------------------------------
+      # Publish only when something that actually goes into the image moved:
+      # the upstream openclaw image, the LSIO base image, or this repo. The
+      # fingerprint of those three is stored as an annotation on the published
+      # index, so the check is one registry read with no external state.
+      # A forced rebuild on the first scheduled run of each month picks up
+      # distro-level security patches that land inside an unchanged base tag.
+      # ---------------------------------------------------------------------
+      - name: Decide whether to publish
+        id: gate
+        run: |
+          set -euo pipefail
+          UP_DIGEST=$(docker buildx imagetools inspect "$UPSTREAM" --format '{{.Manifest.Digest}}')
+          BASE_DIGEST=$(docker buildx imagetools inspect "$BASE" --format '{{.Manifest.Digest}}')
+          HASH=$(printf '%s\n%s\n%s\n' "$UP_DIGEST" "$BASE_DIGEST" "$GITHUB_SHA" | sha256sum | cut -c1-16)
+          PUBLISHED=$(docker buildx imagetools inspect "$IMAGE:latest" --raw 2>/dev/null \
+                      | jq -r '.annotations["io.cookiesncache.inputs"] // ""' || echo "")
+
+          FORCE="${{ github.event.inputs.force || 'false' }}"
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$(date -u +%-d)" -le 7 ]; then
+            FORCE=true   # monthly rebuild for apt/security updates inside an unchanged base tag
+          fi
+
+          echo "upstream=$UP_DIGEST"  >> "$GITHUB_OUTPUT"
+          echo "base=$BASE_DIGEST"    >> "$GITHUB_OUTPUT"
+          echo "hash=$HASH"           >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" != "true" ] && [ -n "$PUBLISHED" ] && [ "$PUBLISHED" = "$HASH" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No input changed (fingerprint $HASH) - nothing to publish."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Publishing: fingerprint $HASH (published was '${PUBLISHED:-none}', force=$FORCE)."
+          fi
+
       - name: Metadata + upstream version
         id: meta
+        if: steps.gate.outputs.publish == 'true'
         run: |
           echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
@@ -59,6 +101,7 @@ jobs:
 
       - name: Compute tags
         id: tags
+        if: steps.gate.outputs.publish == 'true'
         run: |
           TAGS="${IMAGE}:latest,${IMAGE}:${{ steps.meta.outputs.sha }}"
           if [ -n "${{ steps.meta.outputs.version }}" ]; then
@@ -68,13 +111,25 @@ jobs:
           echo "Tags: ${TAGS}"
 
       - name: Build and push
+        if: steps.gate.outputs.publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          provenance: false          # single-arch image, not a manifest list (cleaner for Unraid)
+          # Unraid's update check (DockerClient.php) accepts the Docker v2
+          # manifest/list types and the OCI *index* type, but never
+          # application/vnd.oci.image.manifest.v1+json. `provenance: false` on a
+          # single-platform build pushes exactly that bare OCI manifest, so GHCR
+          # answers Unraid with 404 -> "not available" -> auto-update never fires.
+          # Keeping provenance on wraps the image in an OCI index, which Unraid
+          # reads (same shape upstream openclaw and the LSIO base images publish).
+          provenance: mode=min
+          annotations: |
+            index:io.cookiesncache.inputs=${{ steps.gate.outputs.hash }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.date }}
