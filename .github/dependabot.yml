@@ -6,9 +6,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Three days is already the default; stating it documents the intent. Cooldown applies
-    # to version updates only - security updates are exempt by design, which is what makes
-    # auto-merging them safe.
+    # Deliberate, not a restatement of a default: Dependabot has NO default cooldown - omit the
+    # block and updates arrive immediately. Cooldown applies to version updates only; security
+    # updates are exempt by design, which is what makes auto-merging them safe.
+    #
+    # Three days, and no more, because SHA pinning is the real defence here and cooldown is only
+    # backup. The tj-actions/changed-files compromise (CVE-2025-30066) ran ~15 hours before
+    # detection and ~23 to a safe version - but it worked by retroactively repointing existing
+    # version tags: no new version, no PR, and therefore no cooldown involved at all.
     cooldown:
       default-days: 3
 
@@ -19,5 +24,17 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Three days is a measured ceiling, not a copy of the value above.
+    #
+    # Cooldown measures the age of the tag's CURRENT digest, so it must sit BELOW the upstream
+    # rebuild interval. Above it, the digest is never old enough to clear the window, no PR ever
+    # opens, and the pin silently freezes while forced rebuilds keep baking a stale base -
+    # userland gets older, not fresher.
+    #
+    # Measured 2026-08 from linuxserver/docker-baseimage-ubuntu releases ls64..ls82 (19 noble
+    # releases, 18 intervals): modal gap exactly 7.0 days, minimum 3.4 days, with occasional
+    # 14d and 22.9d outliers. So 14 would open a PR only in the rare long gaps, and even 7
+    # races the modal cycle. 3 clears the 3.4-day minimum with the little headroom there is.
+    # Re-measure before raising this.
     cooldown:
       default-days: 3

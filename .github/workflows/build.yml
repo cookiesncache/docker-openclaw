@@ -10,8 +10,16 @@ on:
       - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
+      # Two separate switches on purpose. They answer different questions, and a dispatch that
+      # implied both would mean re-running the workflow merely to read its logs republishes
+      # byte-shuffled content as a phantom update to every install AND adopts a possibly
+      # hours-old upstream release.
       force:
         description: 'Rebuild and push even if no build input changed'
+        type: boolean
+        default: false
+      adopt:
+        description: 'Adopt the current upstream :latest even if it is younger than the cooldown'
         type: boolean
         default: false
   schedule:
@@ -50,46 +58,36 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ---------------------------------------------------------------------
-      # Publish only when something that actually goes into the image moved:
-      # the upstream openclaw image, or the build inputs in this repo. The
-      # fingerprint is stored as an annotation on the published index, so the
-      # check is one registry read with no external state and no way to drift
-      # from what actually shipped.
+      # Two decisions, made together in .github/scripts/gate.sh:
       #
-      # The repo side is hashed from the *content* of the build inputs
-      # (Dockerfile, root/, .dockerignore, and this workflow) rather than $GITHUB_SHA. A docs-only
-      # commit moves HEAD without changing what goes into the image; using HEAD
-      # would make the next scheduled run republish an image differing only in
-      # BUILD_DATE, which every Unraid install would see as a phantom update.
+      #   1. WHICH upstream digest to build against. A release pushed minutes ago is not
+      #      adopted; the previously published digest keeps shipping until the candidate is
+      #      past a short cooldown. Overridden by a published security advisory that affects
+      #      the version we ship, or by a manual `adopt` dispatch.
+      #   2. WHETHER to publish at all, by comparing a fingerprint of the build inputs against
+      #      the one annotated on the published index - one registry read, no external state,
+      #      and no way to drift from what actually shipped.
       #
-      # A forced rebuild on the first scheduled run of each month picks up
-      # distro-level security patches that land inside the pinned base.
+      # The repo side of the fingerprint hashes the *content* of the build inputs (Dockerfile,
+      # root/, .dockerignore, and this workflow) rather than $GITHUB_SHA. A docs-only commit
+      # moves HEAD without changing what goes into the image; using HEAD would make the next
+      # scheduled run republish an image differing only in BUILD_DATE, which every Unraid
+      # install would see as a phantom update.
+      #
+      # gate.sh is deliberately NOT in that input set: it chooses which image to build, it is
+      # not in the image. Keeping it out means iterating on gate logic does not publish to
+      # every install just to test a decision.
       # ---------------------------------------------------------------------
-      - name: Decide whether to publish
+      - name: Decide what to build and whether to publish
         id: gate
-        run: |
-          set -euo pipefail
-          UP_DIGEST=$(docker buildx imagetools inspect "$UPSTREAM" --format '{{.Manifest.Digest}}')
-          REPO_INPUTS=$(git rev-parse HEAD:Dockerfile HEAD:root HEAD:.dockerignore HEAD:.github/workflows/build.yml | sha256sum | cut -c1-16)
-          HASH=$(printf '%s\n%s\n' "$UP_DIGEST" "$REPO_INPUTS" | sha256sum | cut -c1-16)
-          PUBLISHED=$(docker buildx imagetools inspect "$IMAGE:latest" --raw 2>/dev/null \
-                      | jq -r '.annotations["io.cookiesncache.inputs"] // ""' || echo "")
-
-          FORCE="${{ github.event.inputs.force || 'false' }}"
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$(date -u +%-d)" -eq 1 ]; then
-            FORCE=true   # monthly rebuild for apt/security updates inside the pinned base
-          fi
-
-          echo "upstream=$UP_DIGEST" >> "$GITHUB_OUTPUT"
-          echo "hash=$HASH"          >> "$GITHUB_OUTPUT"
-
-          if [ "$FORCE" != "true" ] && [ -n "$PUBLISHED" ] && [ "$PUBLISHED" = "$HASH" ]; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No input changed (fingerprint $HASH) - nothing to publish."
-          else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Publishing: fingerprint $HASH (published was '${PUBLISHED:-none}', force=$FORCE)."
-          fi
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IN_FORCE: ${{ inputs.force }}
+          IN_ADOPT: ${{ inputs.adopt }}
+          # Rate-limit courtesy for the advisory lookup; it also works unauthenticated, and the
+          # script falls back to that. No extra permission scope is required.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/gate.sh
 
       - name: Metadata + upstream version
         id: meta
