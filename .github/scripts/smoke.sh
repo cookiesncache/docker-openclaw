@@ -107,16 +107,60 @@ else
 fi
 
 # The actual listener. This is the assertion that proves the bind mode took effect rather than
-# being silently ignored: a tolerated-but-unhonoured value would still answer /healthz on
-# loopback while ALSO listening on 0.0.0.0.
-listeners="$(docker exec "$NAME_TS" lsof -iTCP:18789 -sTCP:LISTEN -P -n 2>/dev/null || true)"
-echo "  listeners:"
-printf '%s\n' "$listeners" | sed 's/^/    /'
-if printf '%s\n' "$listeners" | grep -qE '([*]|0[.]0[.]0[.]0|\[::\]):18789'; then
-  bad "gateway is listening on a non-loopback address despite bind=loopback"
+# being silently ignored: a tolerated-but-unhonoured value would still answer /healthz on loopback
+# while ALSO listening on a wildcard address.
+#
+# Read from /proc/net/tcp{,6} rather than lsof. lsof returned NOTHING here - no rows, and no error
+# we kept, because its stderr was discarded - while the gateway was demonstrably serving /healthz.
+# Its behaviour in this container is not something to build an assertion on. /proc is the kernel's
+# own table: always present, needs no package, stable format. Addresses are little-endian hex, so
+# 127.0.0.1 is "0100007F" and 0.0.0.0 is "00000000"; state 0A is LISTEN; port 18789 is 0x4965.
+read_listeners='
+const fs = require("fs");
+const PORT = 18789;
+const hexPort = PORT.toString(16).toUpperCase().padStart(4, "0");
+const out = [];
+for (const entry of [["/proc/net/tcp", 4], ["/proc/net/tcp6", 6]]) {
+  const file = entry[0], fam = entry[1];
+  let txt;
+  try { txt = fs.readFileSync(file, "utf8"); } catch (e) { continue; }
+  for (const line of txt.split("\n").slice(1)) {
+    const f = line.trim().split(/[ \t]+/);
+    if (f.length < 4) continue;
+    const parts = (f[1] || "").split(":");
+    if (parts[1] !== hexPort || f[3] !== "0A") continue;
+    const addr = parts[0];
+    let cls = "other";
+    if (fam === 4) {
+      if (addr === "0100007F") cls = "loopback";
+      else if (addr === "00000000") cls = "wildcard";
+    } else {
+      if (/^0{31}1$/.test(addr)) cls = "loopback";
+      else if (/^0{32}$/.test(addr)) cls = "wildcard";
+      else if (/^0{20}0100007F$/.test(addr)) cls = "loopback";
+    }
+    out.push("LISTEN ipv" + fam + " " + addr + " " + cls);
+  }
+}
+console.log(out.join("\n"));
+'
+listeners="$(docker exec "$NAME_TS" node -e "$read_listeners" 2>&1 || true)"
+echo "  listeners on 18789:"
+if [ -n "$listeners" ]; then
+  printf '%s\n' "$listeners" | sed 's/^/    /'
+else
+  echo "    (none)"
 fi
-if ! printf '%s\n' "$listeners" | grep -qE '(127[.]0[.]0[.]1|\[::1\]):18789'; then
-  bad "no loopback listener on 18789 - expected one with bind=loopback"
+
+if ! printf '%s\n' "$listeners" | grep -q '^LISTEN '; then
+  bad "nothing is listening on 18789 - expected a loopback listener with bind=loopback"
+  echo "  --- diagnostics (stderr kept this time) ---"
+  docker exec "$NAME_TS" sh -c 'cat /proc/net/tcp; echo ---tcp6---; cat /proc/net/tcp6' 2>&1 | sed 's/^/    /' || true
+  docker exec "$NAME_TS" lsof -i -P -n 2>&1 | sed 's/^/    lsof: /' || true
+elif printf '%s\n' "$listeners" | grep -q ' wildcard$'; then
+  bad "gateway is listening on a wildcard address despite bind=loopback"
+elif ! printf '%s\n' "$listeners" | grep -q ' loopback$'; then
+  bad "gateway is listening on 18789 but not on loopback - expected loopback with bind=loopback"
 fi
 
 # The operator-facing warning. Someone who keeps the shipped port mapping loses the dashboard
