@@ -57,7 +57,7 @@ jobs:
       # from what actually shipped.
       #
       # The repo side is hashed from the *content* of the build inputs
-      # (Dockerfile, root/, .dockerignore) rather than $GITHUB_SHA. A docs-only
+      # (Dockerfile, root/, .dockerignore, and this workflow) rather than $GITHUB_SHA. A docs-only
       # commit moves HEAD without changing what goes into the image; using HEAD
       # would make the next scheduled run republish an image differing only in
       # BUILD_DATE, which every Unraid install would see as a phantom update.
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           UP_DIGEST=$(docker buildx imagetools inspect "$UPSTREAM" --format '{{.Manifest.Digest}}')
-          REPO_INPUTS=$(git rev-parse HEAD:Dockerfile HEAD:root HEAD:.dockerignore | sha256sum | cut -c1-16)
+          REPO_INPUTS=$(git rev-parse HEAD:Dockerfile HEAD:root HEAD:.dockerignore HEAD:.github/workflows/build.yml | sha256sum | cut -c1-16)
           HASH=$(printf '%s\n%s\n' "$UP_DIGEST" "$REPO_INPUTS" | sha256sum | cut -c1-16)
           PUBLISHED=$(docker buildx imagetools inspect "$IMAGE:latest" --raw 2>/dev/null \
                       | jq -r '.annotations["io.cookiesncache.inputs"] // ""' || echo "")
@@ -103,19 +103,25 @@ jobs:
           echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           docker pull -q "$PINNED"
-          # Resolve the upstream OpenClaw version (for a pinnable tag). Try the CLI,
-          # then package.json, then an OCI label; leave blank if none can be read.
-          VER=$(timeout 30 docker run --rm --entrypoint node "$PINNED" /app/openclaw.mjs --version 2>/dev/null \
-                | grep -oiE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
+
+          # Upstream ships distinct builds of one release as 2026.7.1, 2026.7.1-1,
+          # 2026.7.1-2 - three different digests. The OCI label is the ONLY probe that
+          # carries that build suffix; `openclaw --version` and package.json both report
+          # the bare version. Probe the label first so two upstream builds of the same
+          # release cannot collapse onto one tag here.
+          RE='[0-9]{4}\.[0-9]+\.[0-9]+(-[0-9]+)?'
+          VER=$(docker inspect "$PINNED" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null                 | grep -oiE "$RE" | head -1 || true)
           if [ -z "$VER" ]; then
-            VER=$(docker run --rm --entrypoint cat "$PINNED" /app/package.json 2>/dev/null \
-                  | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
+            VER=$(timeout 30 docker run --rm --entrypoint node "$PINNED" /app/openclaw.mjs --version 2>/dev/null                   | grep -oiE "$RE" | head -1 || true)
           fi
           if [ -z "$VER" ]; then
-            VER=$(docker inspect "$PINNED" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+            # Match the "version" key specifically, not the first calver-looking string
+            # anywhere in the file (a calver-versioned dependency could precede it).
+            VER=$(docker run --rm --entrypoint cat "$PINNED" /app/package.json 2>/dev/null                   | grep -oE '"version"[[:space:]]*:[[:space:]]*"'"$RE"'"' | head -1                   | grep -oE "$RE" | head -1 || true)
           fi
-          echo "version=${VER}" >> "$GITHUB_OUTPUT"
-          echo "Upstream OpenClaw version: ${VER:-unknown}"
+          echo "version=${VER}"           >> "$GITHUB_OUTPUT"   # full, e.g. 2026.7.1-1
+          echo "version_base=${VER%%-*}"  >> "$GITHUB_OUTPUT"   # bare, e.g. 2026.7.1
+          echo "Upstream OpenClaw version: ${VER:-unknown} (base ${VER%%-*})"
 
       - name: Compute tags
         id: tags
@@ -129,11 +135,28 @@ jobs:
           esac
           echo "upstream_ref=$UPSTREAM_REF" >> "$GITHUB_OUTPUT"
 
-          TAGS="${IMAGE}:latest,${IMAGE}:${{ steps.meta.outputs.sha }}"
-          if [ -n "${{ steps.meta.outputs.version }}" ]; then
-            TAGS="${TAGS},${IMAGE}:${{ steps.meta.outputs.version }}"
+          VER='${{ steps.meta.outputs.version }}'
+          VER_BASE='${{ steps.meta.outputs.version_base }}'
+          SHA='${{ steps.meta.outputs.sha }}'
+
+          # Immutable, never re-pushed: LinuxServer's convention for "same upstream
+          # version, several image builds" (compare linuxserver/code-server:4.133.0-ls358).
+          # This is the tag users pin. run_number is monotonic per workflow; gaps are
+          # expected because runs that publish nothing still consume a number.
+          BUILD_TAG="${VER:-$SHA}-ls${{ github.run_number }}"
+
+          # Floating by design: :latest and the bare version always point at the newest
+          # build. Deliberately NOT tagging by repo commit - the dominant publish trigger
+          # is upstream moving with HEAD unchanged, so a commit tag would be re-pushed
+          # over different content and read as a pin while behaving like :latest.
+          TAGS="${IMAGE}:latest"
+          if [ -n "$VER_BASE" ]; then
+            TAGS="${TAGS},${IMAGE}:${VER_BASE}"
           fi
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          TAGS="${TAGS},${IMAGE}:${BUILD_TAG}"
+
+          echo "build_tag=${BUILD_TAG}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"           >> "$GITHUB_OUTPUT"
           echo "Tags: ${TAGS}"
 
       # Smoke-test BEFORE publishing. This is the only gate on the scheduled path, which is
@@ -182,7 +205,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.date }}
-            VERSION=${{ steps.meta.outputs.version || steps.meta.outputs.sha }}
+            VERSION=${{ steps.tags.outputs.build_tag }}
             UPSTREAM_REF=${{ steps.tags.outputs.upstream_ref }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

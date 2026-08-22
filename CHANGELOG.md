@@ -42,6 +42,18 @@ OPENCLAW_GATEWAY_BIND=lan
 Note that `bind` is inbound-only — OpenClaw reaching *out* to other containers is unaffected and
 needs no configuration.
 
+### Changed
+
+- **Image tags.** `:latest` and the bare version tag (`:2026.7.1`) still exist and still float. New:
+  an immutable per-build tag, `:2026.7.1-1-ls<N>`, following LinuxServer's convention — **this is the
+  tag to pin.** It also preserves upstream's build suffix, so `2026.7.1-1` and `2026.7.1-2` no longer
+  collapse onto one tag.
+- **The short-commit tag (`:52dca30`) is no longer published.** It was never a pin: most publishes are
+  triggered by upstream moving with no repo commit, so the same tag was re-pushed over different
+  content — `:52dca30` (commit dated 2026-06-29) was serving an image built 2026-08-17. Existing such
+  tags remain in the registry but are frozen. The commit is still recorded as the
+  `org.opencontainers.image.revision` annotation.
+
 ### Added
 
 - `OPENCLAW_GATEWAY_BIND` — advanced, empty by default. See the table above.
