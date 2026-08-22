@@ -13,9 +13,13 @@ services:
       - TZ=America/New_York
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # Auth over plain HTTP. Default true for direct LAN-HTTP access; set false (recommended)
-      # behind a TLS terminator (Tailscale serve / reverse proxy), opening the UI via its https URL.
-      - OPENCLAW_ALLOW_INSECURE_AUTH=true
+      # Leave false. Set true only if you reach the dashboard over plain HTTP with no TLS in
+      # front - without it, pairing will fail on a plain-HTTP LAN address.
+      - OPENCLAW_ALLOW_INSECURE_AUTH=false
+      # Advanced. Inbound bind. Unset -> 127.0.0.1 when Tailscale Serve is enabled, else lan.
+      # Set to lan if something must reach IN (reverse proxy, dashboard widget, another
+      # container using the OpenAI-compatible endpoints). Outbound is unaffected.
+      - OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND:-}
       # Control UI allowed origins (CSRF protection). Set to the URL you reach the UI from,
       # e.g. https://openclaw.YOUR-TAILNET.ts.net  (comma-separated for multiple).
       - OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS:-}

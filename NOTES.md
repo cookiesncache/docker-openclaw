@@ -13,7 +13,7 @@ repository and docs (last checked 2026-06-28); re-verify before relying on them,
 | Runs as | `node` user, uid 1000 |
 | Config/state home | `$HOME/.openclaw` (state in `.openclaw/state`) |
 | Config file | `~/.openclaw/openclaw.json` (overridable via `OPENCLAW_CONFIG_PATH`) |
-| Default bind | `127.0.0.1` — `--bind lan` is required to be reachable over the network |
+| Default bind | `127.0.0.1` — a non-loopback `--bind` is required to be reachable over the network |
 | Port | `18789` (gateway) |
 | Health endpoints | `/healthz`, `/readyz` (aliases `/health`, `/ready`) |
 
@@ -31,8 +31,10 @@ LinuxServer model removes the problem: the internal user is remapped to `PUID`/`
 The image copies OpenClaw's prebuilt `/app` from the official image onto the LinuxServer base, rather
 than rebuilding from source:
 
-- `FROM ghcr.io/openclaw/openclaw:latest AS upstream` → `COPY --from=upstream /app /app`
-- Final base `ghcr.io/linuxserver/baseimage-ubuntu:noble` + Node 24 from NodeSource
+- `FROM ${UPSTREAM_REF} AS upstream` → `COPY --from=upstream /app /app`, where `UPSTREAM_REF`
+  defaults to the floating tag for local builds and is always a **digest** in CI
+- Final base `ghcr.io/linuxserver/baseimage-ubuntu:noble`, **pinned by digest** (Dependabot bumps it)
+- Node 24 **copied from the upstream stage**, not installed from NodeSource
 
 Upstream builds from source via pnpm; reproducing that (`pnpm install` + `build:docker` + `ui:build`)
 is high-maintenance, so the copy approach is used instead. Consequences:
@@ -41,8 +43,61 @@ is high-maintenance, so the copy approach is used instead. Consequences:
 - **glibc base + Node major 24 are mandatory.** The copied `node_modules` contains a native state-DB
   module compiled for Node 24 / Debian glibc. Ubuntu Noble (glibc 2.39 ≥ Bookworm's 2.36) is
   forward-compatible. An Alpine/musl base or a different Node major would crash the module on load.
-- Updates track upstream by rebuilding against `:latest` (weekly CI). This trades build reproducibility
-  for automatic upstream tracking — a deliberate choice for this image.
+- Updates track upstream by resolving `:latest` to a digest daily in CI and rebuilding only when it
+  moves. The build is pinned to that digest and records it as both an image label
+  (`io.cookiesncache.openclaw.upstream.ref`) and an index annotation, so any published image can be
+  traced to the exact artifact it came from. CI refuses to publish an unpinned reference.
+
+### Why Node is copied instead of installed
+
+The NodeSource route (`curl https://deb.nodesource.com/setup_24.x | bash -` then an unpinned
+`apt-get install nodejs`) executed a third party's script as root at build time and pinned nothing.
+Copying `/usr/local/bin/node` + `/usr/local/lib/node_modules` from the upstream stage removes that
+and is *more* ABI-correct: it is the exact Node build the bundled native modules were compiled
+against, rather than whatever NodeSource's 24.x head is that morning.
+
+Verified before adopting it (Node 24.16.0 on the noble base):
+
+- `ldd node` needs only `libdl libstdc++ libm libgcc_s libpthread libc` — all present on noble.
+- glibc: bookworm 2.36 → noble 2.39, the forward-compatible direction.
+- OpenSSL 3.5.6 is statically linked, so the base's `libssl` is irrelevant.
+- Global `fetch` works, so the `HEALTHCHECK` is unaffected.
+- Full gateway boot reaches `ready` and `/healthz` returns 200; `/config/.openclaw/state/openclaw.sqlite`
+  plus its `-wal`/`-shm` appear, which is the proof the **native state-DB module actually loaded** —
+  `openclaw.mjs --version` does not exercise it, so it is not sufficient evidence on its own.
+
+CI re-runs that boot test on every publish, including the scheduled upstream-tracking build, because
+this strategy couples us to upstream's internal `/usr/local` layout and Node major. If upstream ever
+switches base image, the smoke test fails before anything is pushed.
+
+**Deliberately not pinned: `@openclaw/brave-plugin`.** It installs at runtime into
+`/config/.openclaw/npm`, which is a persistent volume, so container rebuilds never reinstall it — the
+spec is only re-resolved when `openclaw plugins update brave` is run explicitly. A pin would protect
+that single moment while requiring perpetual manual bumps, and a stale pin leaves OpenClaw's doctor
+"version drift" warning permanently red, which trains you to ignore doctor output generally. The
+replacement control is a publish-date check before running an update:
+
+```bash
+npm view @openclaw/brave-plugin@latest version time
+```
+
+## The publish gate
+
+CI publishes only when a build input moved. The previous state is stored as an **OCI annotation on
+the published index** (`io.cookiesncache.inputs`) and read back with `imagetools inspect --raw` — one
+registry read, no external state, and it cannot drift from reality because it *is* what shipped.
+
+Alternatives rejected: the Actions cache (evicted after 7 days idle, and written even if the push
+later fails), a committed file (needs `contents: write` in the job holding the GHCR credential, plus
+a bot-commit loop), and a repo variable (external state, extra credentials, less accuracy).
+
+The fingerprint hashes the upstream digest together with the **content** of the build inputs
+(`git rev-parse HEAD:Dockerfile HEAD:root HEAD:.dockerignore`), not `$GITHUB_SHA`. Using the branch
+head would make every documentation commit trigger a republish on the next scheduled run — an image
+differing only in `BUILD_DATE`, which every Unraid install would see as a phantom update.
+
+Its one real limitation: deleting the GHCR package version loses the marker and the next run
+republishes. That is the correct failure mode — no published image means nothing to compare against.
 
 **Fallback** if the copied native module ever fails to load: rebuild from source on the base image, or
 `npm rebuild` the offending module against the installed Node.
@@ -52,11 +107,13 @@ is high-maintenance, so the copy approach is used instead. Consequences:
 `openclaw.json` is seeded on first run from `root/defaults/openclaw.json`. The config oneshot then
 applies security-relevant settings on every boot:
 
-- `controlUi.allowInsecureAuth` ← `OPENCLAW_ALLOW_INSECURE_AUTH` (default `true`). The gateway serves
-  plain HTTP; behind a TLS terminator (Tailscale serve / reverse proxy) it recognizes the proxied
-  connection as secure, so `false` is the hardened, recommended setting **when the UI is reached via
-  its https/wss URL**. `true` accepts the token over plain HTTP — the convenience default for direct
-  LAN-HTTP access without a terminator (OpenClaw's health check flags `true` as a debug-grade flag).
+- `controlUi.allowInsecureAuth` ← `OPENCLAW_ALLOW_INSECURE_AUTH`, **authoritative only when the
+  variable is set**. When it is unset the persisted value is left alone; new installs get `false`
+  from `root/defaults/openclaw.json`. This is deliberate: the oneshot runs on every boot, so a plain
+  `??` fallback would have overwritten the config of every existing install that never set the
+  variable — including everyone who copied the README's minimal compose block, which does not set it.
+  Unraid and `docker-compose.yml` users materialize the variable explicitly and are unaffected either
+  way. OpenClaw's own startup check flags `true` as a dangerous flag.
 - `controlUi.allowedOrigins` ← `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` (comma-separated; unset by
   default). Set to the URL the UI is reached from, for CSRF/origin protection on a non-loopback bind.
 - `auth.rateLimit` is seeded to a sane default (`maxAttempts 10 / windowMs 60000 / lockoutMs 300000`)
@@ -70,8 +127,26 @@ s6-overlay v3 layout under `root/etc/s6-overlay/s6-rc.d/`:
 
 - `init-openclaw-config` (oneshot) — builds the `/config` tree, seeds `openclaw.json`, applies the auth
   variable, `lsiown`s to the runtime user. Linked into the base `init-config-end` bundle.
-- `svc-openclaw` (longrun) — runs `node openclaw.mjs gateway --bind lan --port 18789` as `abc` via
-  `s6-setuidgid`. Depends on the base `init-services` bundle (so it starts after all init stages).
+- `svc-openclaw` (longrun) — runs `node openclaw.mjs gateway --bind "$(openclaw-resolve-bind)" --port 18789`
+  as `abc` via `s6-setuidgid`. Depends on the base `init-services` bundle (so it starts after all
+  init stages).
+- `/usr/local/bin/openclaw-resolve-bind` — single source of truth for the inbound bind, used by both
+  the service and the config oneshot so they cannot disagree:
+
+  | Condition | Bind |
+  |---|---|
+  | `OPENCLAW_GATEWAY_BIND` non-empty | verbatim |
+  | else `TAILSCALE_SERVE_PORT` non-empty | `127.0.0.1` |
+  | else | `lan` |
+
+  Two failure modes are guarded deliberately. The variables are tested for **non-empty**, not merely
+  "set", because Unraid passes template variables through even when the field is blank — the same
+  reason the oneshot already defends against an empty `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS`. And the
+  callers fail **open to `lan`** if the helper is missing or errors: an empty `--bind` would either
+  abort startup or silently fall through to upstream's `127.0.0.1`, leaving a container that runs but
+  cannot be reached through Docker port forwarding.
+
+  `bind` is inbound-only; OpenClaw reaching out to other containers is unaffected by it.
 
 `HOME=/config` lands OpenClaw's `$HOME`-relative `~/.openclaw` on the persistent volume. `PUID`/`PGID`/
 `UMASK`/`TZ` are delegated to the base image; there is no `CMD`/`ENTRYPOINT` (the base's `/init` is PID 1).

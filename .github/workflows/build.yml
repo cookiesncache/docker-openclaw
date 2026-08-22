@@ -15,13 +15,19 @@ on:
         type: boolean
         default: false
   schedule:
-    # Weekly check against upstream openclaw + the LSIO base image.
-    - cron: '0 6 * * 1'
+    # Daily check, not weekly. The gate below makes an unchanged day nearly free (two
+    # registry reads, then exit), and daily closes two latency gaps that weekly cannot:
+    #   - a merge performed with GITHUB_TOKEN does not trigger another workflow run, so a
+    #     Dependabot base-image bump merged by dependabot-auto-merge.yml would otherwise
+    #     sit unpublished until the next Monday;
+    #   - upstream openclaw releases are picked up within a day instead of within a week.
+    # The LSIO base is pinned by digest in the Dockerfile, so base movement arrives as a
+    # Dependabot PR rather than being resolved here.
+    - cron: '0 6 * * *'
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/openclaw
   UPSTREAM: ghcr.io/openclaw/openclaw:latest
-  BASE: ghcr.io/linuxserver/baseimage-ubuntu:noble
 
 jobs:
   build:
@@ -31,13 +37,13 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -45,30 +51,37 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Publish only when something that actually goes into the image moved:
-      # the upstream openclaw image, the LSIO base image, or this repo. The
-      # fingerprint of those three is stored as an annotation on the published
-      # index, so the check is one registry read with no external state.
+      # the upstream openclaw image, or the build inputs in this repo. The
+      # fingerprint is stored as an annotation on the published index, so the
+      # check is one registry read with no external state and no way to drift
+      # from what actually shipped.
+      #
+      # The repo side is hashed from the *content* of the build inputs
+      # (Dockerfile, root/, .dockerignore) rather than $GITHUB_SHA. A docs-only
+      # commit moves HEAD without changing what goes into the image; using HEAD
+      # would make the next scheduled run republish an image differing only in
+      # BUILD_DATE, which every Unraid install would see as a phantom update.
+      #
       # A forced rebuild on the first scheduled run of each month picks up
-      # distro-level security patches that land inside an unchanged base tag.
+      # distro-level security patches that land inside the pinned base.
       # ---------------------------------------------------------------------
       - name: Decide whether to publish
         id: gate
         run: |
           set -euo pipefail
           UP_DIGEST=$(docker buildx imagetools inspect "$UPSTREAM" --format '{{.Manifest.Digest}}')
-          BASE_DIGEST=$(docker buildx imagetools inspect "$BASE" --format '{{.Manifest.Digest}}')
-          HASH=$(printf '%s\n%s\n%s\n' "$UP_DIGEST" "$BASE_DIGEST" "$GITHUB_SHA" | sha256sum | cut -c1-16)
+          REPO_INPUTS=$(git rev-parse HEAD:Dockerfile HEAD:root HEAD:.dockerignore | sha256sum | cut -c1-16)
+          HASH=$(printf '%s\n%s\n' "$UP_DIGEST" "$REPO_INPUTS" | sha256sum | cut -c1-16)
           PUBLISHED=$(docker buildx imagetools inspect "$IMAGE:latest" --raw 2>/dev/null \
                       | jq -r '.annotations["io.cookiesncache.inputs"] // ""' || echo "")
 
           FORCE="${{ github.event.inputs.force || 'false' }}"
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$(date -u +%-d)" -le 7 ]; then
-            FORCE=true   # monthly rebuild for apt/security updates inside an unchanged base tag
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$(date -u +%-d)" -eq 1 ]; then
+            FORCE=true   # monthly rebuild for apt/security updates inside the pinned base
           fi
 
-          echo "upstream=$UP_DIGEST"  >> "$GITHUB_OUTPUT"
-          echo "base=$BASE_DIGEST"    >> "$GITHUB_OUTPUT"
-          echo "hash=$HASH"           >> "$GITHUB_OUTPUT"
+          echo "upstream=$UP_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "hash=$HASH"          >> "$GITHUB_OUTPUT"
 
           if [ "$FORCE" != "true" ] && [ -n "$PUBLISHED" ] && [ "$PUBLISHED" = "$HASH" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -82,19 +95,24 @@ jobs:
         id: meta
         if: steps.gate.outputs.publish == 'true'
         run: |
+          set -euo pipefail
+          # Probe the digest the image is actually built from, never the floating tag:
+          # resolving the tag a second time would let the published version label describe
+          # a different artifact than the one that shipped.
+          PINNED="ghcr.io/openclaw/openclaw@${{ steps.gate.outputs.upstream }}"
           echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          docker pull -q "$UPSTREAM"
+          docker pull -q "$PINNED"
           # Resolve the upstream OpenClaw version (for a pinnable tag). Try the CLI,
           # then package.json, then an OCI label; leave blank if none can be read.
-          VER=$(timeout 30 docker run --rm --entrypoint node "$UPSTREAM" /app/openclaw.mjs --version 2>/dev/null \
+          VER=$(timeout 30 docker run --rm --entrypoint node "$PINNED" /app/openclaw.mjs --version 2>/dev/null \
                 | grep -oiE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
           if [ -z "$VER" ]; then
-            VER=$(docker run --rm --entrypoint cat "$UPSTREAM" /app/package.json 2>/dev/null \
+            VER=$(docker run --rm --entrypoint cat "$PINNED" /app/package.json 2>/dev/null \
                   | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
           fi
           if [ -z "$VER" ]; then
-            VER=$(docker inspect "$UPSTREAM" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+            VER=$(docker inspect "$PINNED" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "Upstream OpenClaw version: ${VER:-unknown}"
@@ -103,6 +121,14 @@ jobs:
         id: tags
         if: steps.gate.outputs.publish == 'true'
         run: |
+          set -euo pipefail
+          UPSTREAM_REF="ghcr.io/openclaw/openclaw@${{ steps.gate.outputs.upstream }}"
+          case "$UPSTREAM_REF" in
+            *@sha256:*) ;;
+            *) echo "::error::refusing to publish an unpinned upstream reference: $UPSTREAM_REF"; exit 1 ;;
+          esac
+          echo "upstream_ref=$UPSTREAM_REF" >> "$GITHUB_OUTPUT"
+
           TAGS="${IMAGE}:latest,${IMAGE}:${{ steps.meta.outputs.sha }}"
           if [ -n "${{ steps.meta.outputs.version }}" ]; then
             TAGS="${TAGS},${IMAGE}:${{ steps.meta.outputs.version }}"
@@ -110,9 +136,31 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "Tags: ${TAGS}"
 
+      # Smoke-test BEFORE publishing. This is the only gate on the scheduled path, which is
+      # where upstream drift arrives - a new Node major, a changed /usr/local layout, or a
+      # native-module ABI break would otherwise ship straight to :latest.
+      #
+      # Deliberately a plain `docker buildx build`, not the build-push-action: the docker
+      # exporter cannot carry attestations, and keeping the test build out of the action
+      # means there is exactly one build-push-action invocation and its provenance setting
+      # is never in question. The layers are shared via the gha cache, so this is cheap.
+      - name: Build for smoke test (local only, never pushed)
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          docker buildx build --load -t openclaw:smoke \
+            --build-arg UPSTREAM_REF='${{ steps.tags.outputs.upstream_ref }}' \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            .
+
+      - name: Smoke test the built image
+        if: steps.gate.outputs.publish == 'true'
+        run: bash .github/scripts/smoke.sh openclaw:smoke
+
       - name: Build and push
         if: steps.gate.outputs.publish == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile
@@ -128,11 +176,13 @@ jobs:
           provenance: mode=min
           annotations: |
             index:io.cookiesncache.inputs=${{ steps.gate.outputs.hash }}
+            index:io.cookiesncache.openclaw.upstream.digest=${{ steps.gate.outputs.upstream }}
             index:org.opencontainers.image.revision=${{ github.sha }}
             index:org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.date }}
             VERSION=${{ steps.meta.outputs.version || steps.meta.outputs.sha }}
+            UPSTREAM_REF=${{ steps.tags.outputs.upstream_ref }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

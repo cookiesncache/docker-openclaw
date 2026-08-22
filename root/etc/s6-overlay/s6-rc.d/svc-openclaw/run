@@ -2,9 +2,15 @@
 
 cd /app || exit 1
 
-# Drop from root to abc (== PUID/PGID) and start the gateway.
-# --bind lan is required or the gateway listens on 127.0.0.1 and is unreachable
-# through Docker port forwarding.
+# Inbound bind address (see /usr/local/bin/openclaw-resolve-bind for the rules).
+#
+# Fail OPEN to `lan` — the historical behaviour — if the resolver is missing, not
+# executable, or errors. An empty --bind would either abort startup or silently fall
+# through to upstream's 127.0.0.1 default, leaving a container that runs but cannot be
+# reached through Docker port forwarding (upstream openclaw#61779).
+BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" || BIND="lan"
+[[ -n "${BIND}" ]] || BIND="lan"
+
 exec \
     s6-setuidgid abc \
-        node openclaw.mjs gateway --bind lan --port 18789
+        node openclaw.mjs gateway --bind "${BIND}" --port 18789

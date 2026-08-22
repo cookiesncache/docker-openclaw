@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # The four actions in build.yml / ci.yml run with a GHCR push credential in scope, so
+  # they are pinned to commit SHAs. Dependabot is what keeps those pins from rotting.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Three days is already the default; stating it documents the intent. Cooldown applies
+    # to version updates only - security updates are exempt by design, which is what makes
+    # auto-merging them safe.
+    cooldown:
+      default-days: 3
+
+  # The LSIO base image digest pin in the Dockerfile. Note that Docker is not a GitHub
+  # Advisory Database ecosystem, so these arrive as routine version updates with no
+  # security metadata attached - never as security updates.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3

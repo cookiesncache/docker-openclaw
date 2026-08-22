@@ -1,18 +1,20 @@
 # syntax=docker/dockerfile:1
 
-# ---- upstream: source the prebuilt /app ----
+# ---- upstream: source the prebuilt /app and the Node runtime it was built against ----
 # OpenClaw's final stage is node:24-bookworm-slim (Debian, glibc, amd64), built from
 # source via pnpm. We copy its /app (dist/ + pruned node_modules with the native state-DB
 # module) rather than rebuild. This image is therefore amd64-only, like upstream.
-FROM ghcr.io/openclaw/openclaw:latest AS upstream
+#
+# UPSTREAM_REF defaults to the floating tag so a bare `docker build .` works with no
+# arguments. CI always overrides it with a digest reference, and refuses to publish
+# anything that is not pinned (see .github/workflows/build.yml).
+ARG UPSTREAM_REF=ghcr.io/openclaw/openclaw:latest
+FROM ${UPSTREAM_REF} AS upstream
 
 # ---- final: LinuxServer.io base (s6-overlay v3 + PUID/PGID + /config) ----
-FROM ghcr.io/linuxserver/baseimage-ubuntu:noble
-
-ARG BUILD_DATE
-ARG VERSION
-LABEL build_version="docker-openclaw version:- ${VERSION} built:- ${BUILD_DATE}"
-LABEL maintainer="simsc"
+# Pinned by digest so the base cannot move under us; Dependabot's docker ecosystem
+# proposes bumps as a one-line PR.
+FROM ghcr.io/linuxserver/baseimage-ubuntu:noble@sha256:d023f2c1b0634c1b1ab8740af12198e585fe09c4c94114878278debab09d9516
 
 # HOME=/config so OpenClaw's $HOME-relative ~/.openclaw lands on the persistent volume.
 # LSIO_FIRST_PARTY=false: this is a custom/unofficial image on the LSIO base, so the base
@@ -34,9 +36,6 @@ RUN \
     openssl \
     procps \
     python3 && \
-  echo "**** install nodejs 24 (MUST match upstream ABI for the native state-DB module) ****" && \
-  curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-  apt-get install -y --no-install-recommends nodejs && \
   echo "**** cleanup ****" && \
   apt-get clean && \
   rm -rf \
@@ -44,7 +43,26 @@ RUN \
     /tmp/* \
     /var/tmp/*
 
-# prebuilt OpenClaw application (node_modules compiled against Node 24 / glibc)
+# Node runtime, taken from the upstream stage rather than NodeSource.
+#
+# This is the exact Node build the copied native modules were compiled against, so the ABI
+# match is guaranteed by construction instead of by pinning NodeSource's floating 24.x head.
+# It also removes a `curl | bash` of a third party's script running as root at build time.
+# Verified: node is dynamically linked only against libdl/libstdc++/libm/libgcc_s/libpthread/
+# libc, all present on noble; bookworm's glibc 2.36 -> noble's 2.39 is the forward-compatible
+# direction; OpenSSL is statically linked, so the base's libssl is irrelevant.
+COPY --from=upstream /usr/local/bin/node         /usr/local/bin/node
+COPY --from=upstream /usr/local/lib/node_modules /usr/local/lib/node_modules
+# Node's own license, covering its bundled components (OpenSSL, ICU, V8, zlib, ...). The
+# NodeSource deb used to install this as /usr/share/doc/nodejs/copyright; a binary copy
+# would otherwise drop it. npm's LICENSE rides along inside node_modules/npm.
+COPY --from=upstream /usr/local/LICENSE          /licenses/NODEJS_LICENSE
+RUN \
+  ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+  ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+  ln -sf node /usr/local/bin/nodejs
+
+# prebuilt OpenClaw application (node_modules compiled against the Node copied above)
 COPY --from=upstream /app /app
 
 # preserve OpenClaw's MIT notice alongside the bundled application (MIT requires it)
@@ -54,7 +72,19 @@ COPY THIRD_PARTY_NOTICES.md /licenses/THIRD_PARTY_NOTICES.md
 COPY root/ /
 RUN chmod +x \
     /etc/s6-overlay/s6-rc.d/init-openclaw-config/run \
-    /etc/s6-overlay/s6-rc.d/svc-openclaw/run
+    /etc/s6-overlay/s6-rc.d/svc-openclaw/run \
+    /usr/local/bin/openclaw-resolve-bind
+
+# Build metadata last: these ARGs change on every published build, and declaring them here
+# keeps them from invalidating the cached apt/COPY layers above.
+ARG BUILD_DATE
+ARG VERSION
+ARG UPSTREAM_REF
+LABEL build_version="docker-openclaw version:- ${VERSION} built:- ${BUILD_DATE}"
+LABEL maintainer="simsc"
+# What this image's /app and Node runtime were actually built from. Ask any image with:
+#   docker inspect -f '{{index .Config.Labels "io.cookiesncache.openclaw.upstream.ref"}}' <image>
+LABEL io.cookiesncache.openclaw.upstream.ref="${UPSTREAM_REF}"
 
 WORKDIR /app
 EXPOSE 18789

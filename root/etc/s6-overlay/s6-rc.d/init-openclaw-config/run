@@ -12,16 +12,22 @@ if [[ ! -f /config/.openclaw/openclaw.json ]]; then
     cp /defaults/openclaw.json /config/.openclaw/openclaw.json
 fi
 
-# Apply security-relevant Control UI / auth config each boot. Env-driven settings stay
-# authoritative; the rate-limit default is only seeded when absent (never overrides yours).
-#   OPENCLAW_ALLOW_INSECURE_AUTH         accept auth over plain HTTP. Default true for direct
-#                                        LAN-HTTP access; set false (recommended) behind a TLS
-#                                        terminator (Tailscale serve / reverse proxy), reaching
-#                                        the UI via its https/wss URL.
+# Resolve the inbound bind the same way svc-openclaw does, so the config file matches
+# what the service is actually launched with. Fails open to `lan`.
+OPENCLAW_RESOLVED_BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" || OPENCLAW_RESOLVED_BIND="lan"
+[[ -n "${OPENCLAW_RESOLVED_BIND}" ]] || OPENCLAW_RESOLVED_BIND="lan"
+export OPENCLAW_RESOLVED_BIND
+
+# Apply security-relevant Control UI / auth config each boot.
+#   OPENCLAW_ALLOW_INSECURE_AUTH         accept auth over plain HTTP. Authoritative WHEN SET;
+#                                        when unset the persisted value is left alone, so an
+#                                        existing plain-HTTP install is not broken by an image
+#                                        update. New installs get `false` from /defaults.
 #   OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS  comma-separated allowed origins for the Control UI
 #                                        (CSRF/origin protection on a non-loopback bind), e.g.
 #                                        https://openclaw.<tailnet>.ts.net
-echo "**** applying control-UI/auth config (insecureAuth=${OPENCLAW_ALLOW_INSECURE_AUTH:-true}) ****"
+#   OPENCLAW_GATEWAY_BIND                inbound bind override (see openclaw-resolve-bind)
+echo "**** applying control-UI/auth config (bind=${OPENCLAW_RESOLVED_BIND}, insecureAuth=${OPENCLAW_ALLOW_INSECURE_AUTH:-unset -> keeping existing}) ****"
 node -e '
   const fs = require("fs"), p = "/config/.openclaw/openclaw.json";
   try {
@@ -30,9 +36,15 @@ node -e '
     const ui = c.gateway.controlUi = c.gateway.controlUi || {};
     const auth = c.gateway.auth = c.gateway.auth || {};
 
-    // allowInsecureAuth: env-authoritative, default true
-    const raw = (process.env.OPENCLAW_ALLOW_INSECURE_AUTH ?? "true").toLowerCase();
-    ui.allowInsecureAuth = !["false","0","no","off"].includes(raw);
+    // bind: resolved from OPENCLAW_GATEWAY_BIND / TAILSCALE_SERVE_PORT. The service passes
+    // --bind as well; this keeps the file consistent with the running process.
+    c.gateway.bind = process.env.OPENCLAW_RESOLVED_BIND || "lan";
+
+    // allowInsecureAuth: env-authoritative WHEN SET, otherwise leave the persisted value.
+    const raw = process.env.OPENCLAW_ALLOW_INSECURE_AUTH;
+    if (raw != null && raw !== "") {
+      ui.allowInsecureAuth = !["false","0","no","off"].includes(raw.toLowerCase());
+    }
 
     // allowedOrigins: set only when provided (comma-separated)
     const origins = (process.env.OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS || "")
@@ -45,6 +57,12 @@ node -e '
     }
 
     fs.writeFileSync(p, JSON.stringify(c));
+
+    // Name the symptom, not the mechanism: fail-closed is only correct if the resulting
+    // error is findable by someone who just lost their dashboard.
+    if (ui.allowInsecureAuth === false) {
+      console.log("**** control-UI: insecure auth is OFF (bind=" + c.gateway.bind + "). If pairing fails on a plain http:// address, put TLS in front (Tailscale Serve / reverse proxy) or set OPENCLAW_ALLOW_INSECURE_AUTH=true ****");
+    }
   } catch (e) { console.log("WARN: could not patch openclaw.json: " + e.message); }
 '
 

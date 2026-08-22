@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Job name is the required-status-check context in main's branch protection.
+  # Deliberately NOT "build": build.yml already has a job by that name, and GitHub warns
+  # that duplicate job names across workflows make required-check results ambiguous.
+  pr-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # No registry login: upstream openclaw and the LSIO base are public, so anonymous
+      # pulls suffice. Dependabot-triggered runs get a read-only token and no secrets,
+      # and this job needs neither.
+      - name: Build (never pushed)
+        run: |
+          set -euo pipefail
+          docker buildx build --load -t openclaw:pr .
+
+      - name: Smoke test
+        run: bash .github/scripts/smoke.sh openclaw:pr
