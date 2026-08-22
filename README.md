@@ -25,7 +25,7 @@ This image adopts the LinuxServer permission model: a fixed internal user is rem
   and a bind that follows your access method
 - **Docker Mods, custom scripts/services, and `FILE__` secrets** — inherited from the LinuxServer base
 - Config, state and workspace persist under **`/config`**
-- Tracks upstream OpenClaw and is **rebuilt weekly** by CI
+- Tracks upstream OpenClaw — CI checks **daily** and rebuilds only when something changed
 - **amd64 only** (upstream publishes no arm64 image — see [Limitations](#limitations))
 
 ## Install
@@ -202,15 +202,32 @@ database before the push happens.
 
 **Tags**
 
-| Tag | Use |
-|---|---|
-| `:latest` | tracks upstream |
-| `:<short-sha>` | **the reproducible pin** — one specific build of this repo |
-| `:2026.7.1` | the upstream OpenClaw release this image bundles |
+| Tag | Points at | Mutable? |
+|---|---|---|
+| `:latest` | the newest build | **floats** |
+| `:2026.7.1` | the newest build of that upstream release | **floats** |
+| `:2026.7.1-1-ls47` | one specific build | never re-pushed — **pin this** |
+| `@sha256:…` | exact bytes | immutable |
 
-Prefer the short-sha tag when you need reproducibility. The version tag is derived from upstream's
-release number, which does not include their build suffix (`2026.7.1-1`, `2026.7.1-2`) — so two
-different upstream builds can end up sharing one version tag.
+The `-ls<N>` suffix follows [LinuxServer's convention](https://docs.linuxserver.io/) for "same
+upstream version, several image builds", which is exactly this image's situation: upstream ships
+`2026.7.1`, `2026.7.1-1` and `2026.7.1-2` as distinct builds of one release, and the monthly rebuild
+produces new images at an unchanged upstream version. Both of those would otherwise land on the same
+tag.
+
+`:latest` and the bare version tag are convenience pointers and will change under you. **If you need
+a fixed artifact, pin the `-ls` tag** — it is published once and never re-pushed.
+
+For byte-exact immutability, pin the digest instead:
+
+```bash
+docker buildx imagetools inspect ghcr.io/cookiesncache/openclaw:latest    # prints the digest
+# then: ghcr.io/cookiesncache/openclaw@sha256:...
+```
+
+Older images carry a short-commit tag (e.g. `:52dca30`). **Do not treat those as pins** — they were
+re-pushed on every publish, because most publishes are triggered by upstream moving with no repo
+commit at all. They are no longer produced.
 
 **What was this built from?**
 

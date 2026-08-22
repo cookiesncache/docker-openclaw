@@ -102,6 +102,32 @@ republishes. That is the correct failure mode — no published image means nothi
 **Fallback** if the copied native module ever fails to load: rebuild from source on the base image, or
 `npm rebuild` the offending module against the installed Node.
 
+## Tagging
+
+Published on every publish: `:latest`, the bare upstream version (`:2026.7.1`), and an immutable
+build tag (`:2026.7.1-1-ls<run_number>`). The first two float; the third is never re-pushed and is
+what the README tells people to pin.
+
+Two independent things force a build tag, and neither is expressible as a floating version tag:
+
+- Upstream ships several builds of one release - `2026.7.1`, `2026.7.1-1`, `2026.7.1-2` are three
+  distinct digests. Only the OCI label carries that suffix; `openclaw --version` and `package.json`
+  both report the bare version, so the label is probed **first**.
+- The monthly forced rebuild produces a new image at an unchanged upstream version, forever.
+
+`-ls<N>` is LinuxServer's answer to exactly this (compare `linuxserver/code-server:4.133.0-ls358`),
+which suits an image that follows their conventions everywhere else. `github.run_number` supplies the
+counter; it is monotonic per workflow, and gaps are expected because runs that publish nothing still
+consume a number.
+
+**Do not tag by repo commit.** The old `:<short-sha>` tag was removed because it was actively
+misleading: the dominant publish trigger is upstream moving with `HEAD` unchanged, so the same commit
+tag was re-pushed over different content on every scheduled publish. Live proof before removal - the
+tag `:52dca30` (commit dated 2026-06-29) served an image built 2026-08-17 containing a later upstream
+release. The commit is still recorded, as the `org.opencontainers.image.revision` annotation.
+
+The only byte-exact reference is the index digest, which needs no tag scheme at all.
+
 ## Auth posture
 
 `openclaw.json` is seeded on first run from `root/defaults/openclaw.json`. The config oneshot then

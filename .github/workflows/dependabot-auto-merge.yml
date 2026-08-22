@@ -30,8 +30,12 @@ jobs:
           # (main.ts routes the API error to core.setFailed), which is the desired loud
           # failure; it does not silently return empty.
           #
-          # Store this as a *Dependabot* secret (Settings -> Secrets and variables ->
-          # Dependabot), not an Actions secret: Dependabot-triggered runs read that store.
+          # Store this as an *Actions* secret (Settings -> Secrets and variables ->
+          # Actions). Dependabot-triggered runs on pull_request/push read the Dependabot
+          # secret store, but pull_request_target is explicitly NOT one of those events -
+          # it runs in the trusted base context and reads Actions secrets. Verified the
+          # hard way: a Dependabot-store secret created six minutes before these runs was
+          # invisible to them ("github-token is not set!").
           # Fine-grained, this repository only, read-only Dependabot alerts + Metadata.
           github-token: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
 
