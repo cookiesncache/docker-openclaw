@@ -1,29 +1,54 @@
 #!/usr/bin/with-contenv bash
-# Resolve the gateway's inbound bind address. Single source of truth for both
-# svc-openclaw (the --bind flag) and init-openclaw-config (gateway.bind in the config
-# file), so the two can never disagree.
+# Resolve the gateway's inbound bind mode. Single source of truth for both svc-openclaw (the
+# --bind flag) and init-openclaw-config (gateway.bind in the config file), so the two can never
+# disagree.
 #
-# `bind` is INBOUND ONLY. OpenClaw reaching *out* to other containers is not affected by
-# it and needs no configuration.
+# `bind` is INBOUND ONLY. OpenClaw reaching *out* to other containers is not affected by it and
+# needs no configuration.
 #
-#   OPENCLAW_GATEWAY_BIND non-empty -> use verbatim  (portable escape hatch, checked first)
-#   TAILSCALE_SERVE_PORT  non-empty -> 127.0.0.1     (Unraid's Tailscale integration runs
-#                                                     Serve inside this container and
-#                                                     proxies to loopback, so LAN exposure
-#                                                     would only widen the surface)
-#   otherwise                       -> lan           (reachable via a published Docker port
-#                                                     — unchanged historical behaviour)
+# OpenClaw's configuration reference defines `bind` as a MODE, not an address:
 #
-# Tested for NON-EMPTY, not merely "set": Unraid passes template variables through even
-# when the field is left blank, so an advanced empty-default variable arrives as an empty
-# string. Treating that as "set" would emit `--bind ""`.
+#     auto | loopback (default) | lan (0.0.0.0) | tailnet | custom
+#
+# and explicitly says not to use host aliases (0.0.0.0, 127.0.0.1, localhost, ::, ::1) there.
+# This script therefore emits mode names only.
+#
+#   OPENCLAW_GATEWAY_BIND non-empty -> that value  (portable escape hatch, checked first)
+#   TAILSCALE_SERVE_PORT  non-empty -> loopback    (Unraid's Tailscale integration runs Serve
+#                                                   inside this container and proxies to
+#                                                   loopback, so LAN exposure would only widen
+#                                                   the surface)
+#   otherwise                       -> lan         (reachable via a published Docker port
+#                                                   - unchanged historical behaviour)
+#
+# Tested for NON-EMPTY, not merely "set": Unraid passes template variables through even when the
+# field is left blank, so an advanced empty-default variable arrives as an empty string. Treating
+# that as "set" would emit `--bind ""`. Normalization below does not change this - an empty value
+# still falls through to detection.
+#
+# This script writes NOTHING but the resolved value to stdout. Its stdout *is* its return value
+# (callers capture it with $(...)), and both callers redirect stderr to /dev/null, so a warning
+# printed here would either corrupt the bind value or vanish. The human-facing notices live in
+# init-openclaw-config/run, which already prints and runs before the gateway starts.
 #
 # Debug with:  docker exec <container> openclaw-resolve-bind
 
+# Map legacy host aliases onto the mode names OpenClaw actually accepts. Exact, case-sensitive
+# matches only; anything else passes through verbatim so `auto`, `tailnet`, `custom` and genuine
+# custom host strings keep working. This exists because earlier revisions of this image (and its
+# README) told people to use `127.0.0.1`.
+openclaw_normalize_bind() {
+    case "$1" in
+        127.0.0.1|localhost|::1) printf '%s\n' "loopback" ;;
+        0.0.0.0|::)              printf '%s\n' "lan" ;;
+        *)                       printf '%s\n' "$1" ;;
+    esac
+}
+
 if [[ -n "${OPENCLAW_GATEWAY_BIND:-}" ]]; then
-    printf '%s\n' "${OPENCLAW_GATEWAY_BIND}"
+    openclaw_normalize_bind "${OPENCLAW_GATEWAY_BIND}"
 elif [[ -n "${TAILSCALE_SERVE_PORT:-}" ]]; then
-    printf '%s\n' "127.0.0.1"
+    printf '%s\n' "loopback"
 else
     printf '%s\n' "lan"
 fi

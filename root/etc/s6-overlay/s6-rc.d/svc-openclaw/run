@@ -2,11 +2,11 @@
 
 cd /app || exit 1
 
-# Inbound bind address (see /usr/local/bin/openclaw-resolve-bind for the rules).
+# Inbound bind mode (see /usr/local/bin/openclaw-resolve-bind for the rules).
 #
 # Fail OPEN to `lan` — the historical behaviour — if the resolver is missing, not
 # executable, or errors. An empty --bind would either abort startup or silently fall
-# through to upstream's 127.0.0.1 default, leaving a container that runs but cannot be
+# through to upstream's `loopback` default, leaving a container that runs but cannot be
 # reached through Docker port forwarding (upstream openclaw#61779).
 BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" || BIND="lan"
 [[ -n "${BIND}" ]] || BIND="lan"

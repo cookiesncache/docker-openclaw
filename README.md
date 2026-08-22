@@ -73,7 +73,7 @@ A full `docker-compose.yml` (with the optional provider keys) and an `.env.examp
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (optional). |
 | `OPENCLAW_ALLOW_INSECURE_AUTH` | `false` | Leave `false`. Set `true` only if you reach the dashboard over plain HTTP with no TLS in front — without it, pairing fails on a plain-HTTP LAN address. |
 | `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` | — | Comma-separated allowed origins for the Control UI (CSRF protection). Set to the URL you reach the UI from. |
-| `OPENCLAW_GATEWAY_BIND` | — | Advanced. Inbound bind address. Empty → `127.0.0.1` when Tailscale Serve is enabled, else `lan`. See [Access](#access). |
+| `OPENCLAW_GATEWAY_BIND` | — | Advanced. Inbound bind **mode** (`auto`/`loopback`/`lan`/`tailnet`/`custom`), not a host address. Empty → `loopback` when Tailscale Serve is enabled, else `lan`. See [Access](#access). |
 
 Additional optional provider keys / bot tokens are also passed through:
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY`,
@@ -104,10 +104,22 @@ with `OPENCLAW_ALLOW_INSECURE_AUTH=false`.
 Leave `OPENCLAW_ALLOW_INSECURE_AUTH=false` (the default). Reach the UI at
 `https://openclaw.<your-tailnet>.ts.net/`.
 
+> **Step 3 is not optional housekeeping.** A published Docker port cannot reach a loopback-bound
+> process — the forward DNATs to `eth0`, not `lo`. So once Tailscale is enabled,
+> `http://<unraid-ip>:18789` stops working whether or not you remove the mapping. The container
+> cannot see host-side port publishing, so it cannot correct this for you; it prints a notice at
+> startup instead. If you want the LAN address to keep working alongside Tailscale, set
+> `OPENCLAW_GATEWAY_BIND=lan`.
+
 This is Unraid 7.x's own integration — Unraid installs Tailscale into the container and injects the
 `TAILSCALE_*` variables. It is **not** a Docker Mod, and nothing in this image provides it. The
 container notices `TAILSCALE_SERVE_PORT` and binds loopback automatically; Serve proxies to it from
 inside the same container, so nothing needs to listen on the LAN.
+
+**On `br0` / macvlan / ipvlan**, Unraid gives the container its own LAN IP and port mappings are
+silently ignored — so `loopback` makes it unreachable from anywhere else, while `lan` publishes it
+straight onto your LAN with no host firewall in front. Choose `OPENCLAW_GATEWAY_BIND` deliberately
+on those networks rather than relying on the default.
 
 **Plain Docker / compose**
 
@@ -128,9 +140,14 @@ By default the container picks:
 
 | Condition | Bind |
 |---|---|
-| `OPENCLAW_GATEWAY_BIND` set to a non-empty value | that value, verbatim |
-| otherwise, `TAILSCALE_SERVE_PORT` present | `127.0.0.1` |
+| `OPENCLAW_GATEWAY_BIND` set to a non-empty value | that value |
+| otherwise, `TAILSCALE_SERVE_PORT` present | `loopback` |
 | otherwise | `lan` |
+
+`bind` takes a **mode**, not an address: `auto`, `loopback`, `lan`, `tailnet` or `custom`. Legacy
+host aliases are normalized for you — `127.0.0.1`, `localhost` and `::1` become `loopback`;
+`0.0.0.0` and `::` become `lan` — and the container logs a line when it does so. Anything else is
+passed through untouched.
 
 Set `OPENCLAW_GATEWAY_BIND=lan` when something needs to reach **in**:
 
@@ -168,6 +185,20 @@ proxy_set_header X-Forwarded-For $remote_addr;          # correct
 
 Appending preserves whatever the client sent, so an attacker can prepend a forged address and have
 it trusted. Overwriting discards client-supplied values, which is the point.
+
+### First channel you connect: set `commands.ownerAllowFrom`
+
+Do this as part of connecting your first channel (Discord, Telegram, …), not later.
+
+Owner identity in OpenClaw is **channel-scoped** — it is expressed as identities on a specific
+channel, so with no channel connected there is nothing for the setting to match and it does
+nothing. That makes it easy to skip during setup. The moment a channel *is* connected it becomes
+load-bearing: it is what separates "the owner is instructing the bot" from "somebody in the
+channel is instructing the bot", and the gateway token does not cover that distinction — the token
+guards the HTTP gateway, while messages arrive over the channel.
+
+Set it to your own account on that channel before inviting anyone else, or before joining a
+shared server.
 
 ## LinuxServer features
 

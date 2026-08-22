@@ -40,6 +40,16 @@ loopback (Serve proxies to it inside the container), otherwise `lan` as before. 
 **and** a published 18789 port, or something on the docker network reaches into the gateway, set the
 new advanced variable **OPENCLAW_GATEWAY_BIND=lan** to restore the old behaviour.
 
+Note that a published Docker port can never reach a loopback-bound process, so with Tailscale
+enabled `http://YOUR-UNRAID-IP:18789` stops working unless you set OPENCLAW_GATEWAY_BIND=lan. The
+container prints a notice at startup explaining this.
+
+3. **Bugfix:** the Tailscale path previously wrote the literal address `127.0.0.1` into
+`gateway.bind`, but OpenClaw expects a bind *mode* there (auto / loopback / lan / tailnet / custom)
+and documents host aliases as unsupported. It now writes `loopback`. If you set
+OPENCLAW_GATEWAY_BIND to a host address yourself, it is normalized to the matching mode and the
+container logs that it did so - no template change needed on your side.
+
 Also: the upstream OpenClaw image is now pinned by digest and recorded on the image, the build no
 longer installs Node from a third-party script, and unchanged rebuilds are skipped - so you should
 stop seeing update prompts for rebuilds that change nothing.
@@ -54,7 +64,7 @@ stop seeing update prompts for rebuilds that change nothing.
   <Config Name="ANTHROPIC_API_KEY" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Anthropic API key (sk-ant-...). Leave blank if configured another way." Type="Variable" Display="always" Required="false" Mask="true"/>
   <Config Name="OPENCLAW_ALLOW_INSECURE_AUTH" Target="OPENCLAW_ALLOW_INSECURE_AUTH" Default="false" Mode="" Description="Leave false. Set true only if you reach the dashboard over plain HTTP with no TLS in front - without it, pairing will fail on a plain-HTTP LAN address." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS" Target="OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS" Default="" Mode="" Description="Comma-separated allowed origins for the Control UI (CSRF/origin protection on a non-loopback bind). Set to the URL you reach the UI from, e.g. https://openclaw.YOUR-TAILNET.ts.net. Strongly recommended." Type="Variable" Display="advanced" Required="false" Mask="false"/>
-  <Config Name="OPENCLAW_GATEWAY_BIND" Target="OPENCLAW_GATEWAY_BIND" Default="" Mode="" Description="Advanced. Which address the gateway listens on for INBOUND connections. Leave empty: the container uses 127.0.0.1 when Tailscale Serve is enabled (Serve runs inside the container and proxies to loopback) and lan otherwise. Set to lan if something else must reach in - a reverse proxy, a dashboard widget, or another container using the OpenAI-compatible endpoints. Does not affect OpenClaw reaching OUT to other containers." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="OPENCLAW_GATEWAY_BIND" Target="OPENCLAW_GATEWAY_BIND" Default="" Mode="" Description="Advanced. Which bind MODE the gateway listens on for INBOUND connections: auto, loopback, lan, tailnet or custom. This is a mode name, not a host address; legacy values like 127.0.0.1 or 0.0.0.0 are normalized to loopback / lan for you. Leave empty: the container uses loopback when Tailscale Serve is enabled (Serve runs inside the container and proxies to loopback) and lan otherwise. Set to lan if something else must reach in - a reverse proxy, a dashboard widget, or another container using the OpenAI-compatible endpoints - or if you enable Tailscale but keep the published 18789 port, because a published port cannot reach a loopback-bound process. Does not affect OpenClaw reaching OUT to other containers." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <!-- Optional extra provider keys / bot tokens, preserved from the original OpenClaw template for transparency. All optional, masked, empty by default. -->
   <Config Name="OPENAI_API_KEY" Target="OPENAI_API_KEY" Default="" Mode="" Description="Optional. OpenAI API key, if using OpenAI models." Type="Variable" Display="advanced" Required="false" Mask="true"/>
   <Config Name="OPENROUTER_API_KEY" Target="OPENROUTER_API_KEY" Default="" Mode="" Description="Optional. OpenRouter API key." Type="Variable" Display="advanced" Required="false" Mask="true"/>
