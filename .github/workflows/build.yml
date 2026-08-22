@@ -209,3 +209,57 @@ jobs:
             UPSTREAM_REF=${{ steps.tags.outputs.upstream_ref }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # The published manifest must stay readable by Unraid's update check.
+      #
+      # DockerClient.php sends the exact Accept header below. It does NOT include
+      # application/vnd.oci.image.manifest.v1+json, so if a push ever produces a bare
+      # OCI image manifest instead of an index, GHCR answers 404,
+      # unraid-update-status.json records "remote": null, the UI column reads "not
+      # available", and CA Auto Update silently stops firing for every install. That
+      # has already happened here once (provenance: false on a single-platform build);
+      # the legacy :52dca30 tag still 404s under this header today.
+      #
+      # pr-smoke cannot catch this - it builds with --load and never pushes, so it
+      # never sees what the registry serves. This is the only check that does.
+      # ---------------------------------------------------------------------
+      - name: Verify the published manifest is readable by Unraid
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          REPO_PATH="${OWNER}/openclaw"
+          ACCEPT='application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json'
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull&service=ghcr.io" | jq -r .token)
+
+          fail=0
+          for tag in latest '${{ steps.tags.outputs.build_tag }}'; do
+            [ -n "$tag" ] || continue
+            URL="https://ghcr.io/v2/${REPO_PATH}/manifests/${tag}"
+            result=""
+            for attempt in 1 2 3; do
+              # -w avoids parsing headers (and their CRLFs) altogether.
+              result=$(curl -so /dev/null -w '%{http_code} %{content_type}' -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" "$URL")
+              case "$result" in 200*) break ;; esac
+              sleep 5
+            done
+            code=${result%% *}
+            ctype=${result#* }
+            echo "  :${tag} -> HTTP ${code} ${ctype}"
+
+            if [ "$code" != "200" ]; then
+              echo "::error::GHCR returned ${code} for :${tag} under Unraid's Accept header - update checks would break for every install"
+              fail=1
+              continue
+            fi
+            case "$ctype" in
+              *oci.image.index.v1+json*|*manifest.list.v2+json*|*distribution.manifest.v2+json*) ;;
+              *)
+                echo "::error::tag ${tag} is ${ctype}, a type Unraid's Accept header does not include - update checks would break"
+                fail=1
+                ;;
+            esac
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "::notice::published manifests are readable with Unraid's Accept header"
