@@ -130,14 +130,23 @@ for (const entry of [["/proc/net/tcp", 4], ["/proc/net/tcp6", 6]]) {
     const parts = (f[1] || "").split(":");
     if (parts[1] !== hexPort || f[3] !== "0A") continue;
     const addr = parts[0];
+    // /proc stores addresses as little-endian 32-bit words, so the hex is NOT a plain
+    // big-endian address: 127.0.0.1 is "0100007F", and ::1 is
+    // "00000000000000000000000001000000" - the 01 leads the final word rather than
+    // trailing the string. Byte-swap each word back before classifying, or ::1 reads as
+    // an unknown address and a correctly loopback-bound gateway looks wrong.
+    const be = (hex) => hex.length % 8 !== 0 ? hex : hex.match(/.{8}/g)
+      .map(w => w.slice(6, 8) + w.slice(4, 6) + w.slice(2, 4) + w.slice(0, 2)).join("");
+    const a = be(addr).toUpperCase();
     let cls = "other";
     if (fam === 4) {
-      if (addr === "0100007F") cls = "loopback";
-      else if (addr === "00000000") cls = "wildcard";
+      if (a === "7F000001") cls = "loopback";               // 127.0.0.1
+      else if (a === "00000000") cls = "wildcard";          // 0.0.0.0
+      else if (/^7F/.test(a)) cls = "loopback";             // rest of 127/8
     } else {
-      if (/^0{31}1$/.test(addr)) cls = "loopback";
-      else if (/^0{32}$/.test(addr)) cls = "wildcard";
-      else if (/^0{20}0100007F$/.test(addr)) cls = "loopback";
+      if (/^0{31}1$/.test(a)) cls = "loopback";             // ::1
+      else if (/^0{32}$/.test(a)) cls = "wildcard";         // ::
+      else if (/^0{20}FFFF7F/.test(a)) cls = "loopback";    // ::ffff:127.x.x.x
     }
     out.push("LISTEN ipv" + fam + " " + addr + " " + cls);
   }
