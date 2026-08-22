@@ -1,0 +1,29 @@
+#!/usr/bin/with-contenv bash
+# Resolve the gateway's inbound bind address. Single source of truth for both
+# svc-openclaw (the --bind flag) and init-openclaw-config (gateway.bind in the config
+# file), so the two can never disagree.
+#
+# `bind` is INBOUND ONLY. OpenClaw reaching *out* to other containers is not affected by
+# it and needs no configuration.
+#
+#   OPENCLAW_GATEWAY_BIND non-empty -> use verbatim  (portable escape hatch, checked first)
+#   TAILSCALE_SERVE_PORT  non-empty -> 127.0.0.1     (Unraid's Tailscale integration runs
+#                                                     Serve inside this container and
+#                                                     proxies to loopback, so LAN exposure
+#                                                     would only widen the surface)
+#   otherwise                       -> lan           (reachable via a published Docker port
+#                                                     — unchanged historical behaviour)
+#
+# Tested for NON-EMPTY, not merely "set": Unraid passes template variables through even
+# when the field is left blank, so an advanced empty-default variable arrives as an empty
+# string. Treating that as "set" would emit `--bind ""`.
+#
+# Debug with:  docker exec <container> openclaw-resolve-bind
+
+if [[ -n "${OPENCLAW_GATEWAY_BIND:-}" ]]; then
+    printf '%s\n' "${OPENCLAW_GATEWAY_BIND}"
+elif [[ -n "${TAILSCALE_SERVE_PORT:-}" ]]; then
+    printf '%s\n' "127.0.0.1"
+else
+    printf '%s\n' "lan"
+fi

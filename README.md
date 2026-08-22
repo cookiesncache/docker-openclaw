@@ -21,7 +21,8 @@ This image adopts the LinuxServer permission model: a fixed internal user is rem
 
 - **`PUID`/`PGID`/`UMASK`** ownership handling — no manual `chown`
 - **s6-overlay** init and supervision
-- **Hardening knobs** — Control UI allowed-origins, an insecure-auth toggle, and a seeded auth rate limit
+- **Fail-closed defaults** — insecure auth off, allowed-origins control, a seeded auth rate limit,
+  and a bind that follows your access method
 - **Docker Mods, custom scripts/services, and `FILE__` secrets** — inherited from the LinuxServer base
 - Config, state and workspace persist under **`/config`**
 - Tracks upstream OpenClaw and is **rebuilt weekly** by CI
@@ -47,6 +48,9 @@ services:
       - TZ=Etc/UTC
       - OPENCLAW_GATEWAY_TOKEN=change-me        # openssl rand -hex 24
       - ANTHROPIC_API_KEY=                      # optional
+      # Pairing over plain http://<ip>:18789 with no TLS in front? Set this to true.
+      # See Access below for the recommended setup instead.
+      - OPENCLAW_ALLOW_INSECURE_AUTH=false
     volumes:
       - ./config:/config
     ports:
@@ -67,8 +71,9 @@ A full `docker-compose.yml` (with the optional provider keys) and an `.env.examp
 | `TZ` | — | Timezone, e.g. `America/New_York`. |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token (**required**). Generate: `openssl rand -hex 24`. |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (optional). |
-| `OPENCLAW_ALLOW_INSECURE_AUTH` | `true` | Allow the Control UI to authenticate over plain HTTP — see below. |
+| `OPENCLAW_ALLOW_INSECURE_AUTH` | `false` | Leave `false`. Set `true` only if you reach the dashboard over plain HTTP with no TLS in front — without it, pairing fails on a plain-HTTP LAN address. |
 | `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` | — | Comma-separated allowed origins for the Control UI (CSRF protection). Set to the URL you reach the UI from. |
+| `OPENCLAW_GATEWAY_BIND` | — | Advanced. Inbound bind address. Empty → `127.0.0.1` when Tailscale Serve is enabled, else `lan`. See [Access](#access). |
 
 Additional optional provider keys / bot tokens are also passed through:
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY`,
@@ -81,46 +86,88 @@ Additional optional provider keys / bot tokens are also passed through:
 | `/config` | Config, state and workspace (`openclaw.json`, `state/`, `workspace/`). |
 | `18789/tcp` | Gateway / Control UI. |
 
-### Accessing the Control UI
+## Access
 
-The gateway serves **plain HTTP** and does not terminate TLS itself — HTTPS comes from a front
-terminator (Tailscale serve or a reverse proxy). **Do not expose port `18789` directly to the
-internet;** reach it through Tailscale or your proxy.
+The gateway serves **plain HTTP** and does not terminate TLS itself. **Do not expose port `18789`
+directly to the internet.** HTTPS comes from a terminator in front — Tailscale Serve or a reverse
+proxy — and with one in place the gateway sees the connection as secure, so device pairing works
+with `OPENCLAW_ALLOW_INSECURE_AUTH=false`.
 
-**Hardened setup (recommended):**
+### The secure recipe
 
-- Set **`OPENCLAW_ALLOW_INSECURE_AUTH=false`**. Behind a TLS terminator the gateway recognizes the
-  connection as secure, so this works as long as you open the UI via its **https/wss URL** (e.g.
-  `https://openclaw.<tailnet>.ts.net/`) — not a plain `http://<ip>:18789` URL.
-- Set **`OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS`** to that same URL so the Control UI enforces origin
-  checks (CSRF protection) instead of falling back to the Host header.
+**Unraid — three toggles**
 
-`OPENCLAW_ALLOW_INSECURE_AUTH` defaults to **`true`** so the UI works out of the box over plain
-`http://<ip>:18789` without a terminator. That accepts the token over plain HTTP — fine for a quick
-local start, but switch to the hardened settings above once you're reaching the UI over HTTPS. The
-image also seeds a default `auth.rateLimit` (brute-force throttling) when none is configured.
+1. In the container template, enable **Use Tailscale**.
+2. Set **Tailscale Serve** to `Serve`.
+3. Remove the `18789` port mapping.
 
-## Hardening
+Leave `OPENCLAW_ALLOW_INSECURE_AUTH=false` (the default). Reach the UI at
+`https://openclaw.<your-tailnet>.ts.net/`.
 
-OpenClaw's Control UI / auth controls are exposed as variables, with safe defaults seeded for you:
+This is Unraid 7.x's own integration — Unraid installs Tailscale into the container and injects the
+`TAILSCALE_*` variables. It is **not** a Docker Mod, and nothing in this image provides it. The
+container notices `TAILSCALE_SERVE_PORT` and binds loopback automatically; Serve proxies to it from
+inside the same container, so nothing needs to listen on the LAN.
 
-- **`OPENCLAW_ALLOW_INSECURE_AUTH`** — `true` by default for plain `http://<ip>:18789` access. Set
-  **`false`** behind a TLS terminator (Tailscale serve / reverse proxy) and open the UI via its
-  `https`/`wss` URL.
-- **`OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS`** — set to your UI URL so the Control UI enforces origin
-  checks (CSRF protection) instead of falling back to the Host header.
-- **`auth.rateLimit`** — a brute-force throttle (10 attempts / 60 s window / 5-min lockout) is seeded
-  automatically when none is configured. A value you set yourself is never overridden.
+**Plain Docker / compose**
 
-Recommended for any networked deployment:
+There is no equivalent toggle. Run your own Tailscale sidecar or a reverse proxy, then:
 
-```yaml
-environment:
-  - OPENCLAW_ALLOW_INSECURE_AUTH=false
-  - OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=https://openclaw.<your-tailnet>.ts.net
+- keep `OPENCLAW_ALLOW_INSECURE_AUTH=false` and open the UI via its `https`/`wss` URL;
+- set `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` to that same URL;
+- set `OPENCLAW_GATEWAY_BIND` per the next section — a sidecar sharing the container's network
+  namespace can use loopback; a proxy on the docker network needs `lan`.
+
+### When you need `OPENCLAW_GATEWAY_BIND=lan`
+
+`bind` controls **inbound** connections only. OpenClaw reaching **out** — to Ollama, to a database,
+to any other container — is not affected by it and needs no configuration. People conflate these two
+directions constantly; if your problem is OpenClaw failing to *call* something, `bind` is not it.
+
+By default the container picks:
+
+| Condition | Bind |
+|---|---|
+| `OPENCLAW_GATEWAY_BIND` set to a non-empty value | that value, verbatim |
+| otherwise, `TAILSCALE_SERVE_PORT` present | `127.0.0.1` |
+| otherwise | `lan` |
+
+Set `OPENCLAW_GATEWAY_BIND=lan` when something needs to reach **in**:
+
+- a reverse proxy — SWAG, Nginx Proxy Manager, Traefik;
+- dashboard widgets — Homepage, Homarr;
+- n8n or Home Assistant calling the gateway API;
+- most commonly, **another container using the OpenAI-compatible endpoints** the gateway serves on
+  the same port: `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`, `/v1/responses`.
+
+Check what the container resolved:
+
+```bash
+docker exec openclaw openclaw-resolve-bind
 ```
 
-…and reach the UI through Tailscale / your reverse proxy — never expose port `18789` to the internet.
+### Putting a reverse proxy in front
+
+Setting `lan` for a proxy immediately needs two more things, or the UI will refuse the connection:
+
+1. **`gateway.controlUi.allowedOrigins` must include the proxy's URL.** Set
+   `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=https://openclaw.example.com`.
+
+   OpenClaw auto-seeds loopback origins (`http://localhost:18789`, `http://127.0.0.1:18789`) when
+   bound to `lan`, but **applies them at runtime without writing them to `openclaw.json`** — so do
+   not be surprised when the file looks empty. Your proxy URL still has to be added explicitly.
+
+2. **`gateway.trustedProxies` must list the proxy's IP**, with `allowRealIpFallback: false`.
+
+And the proxy must **overwrite** `X-Forwarded-For`, not append to it:
+
+```nginx
+proxy_set_header X-Forwarded-For $remote_addr;          # correct
+# proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;   # WRONG - see below
+```
+
+Appending preserves whatever the client sent, so an attacker can prepend a forged address and have
+it trusted. Overwriting discards client-supplied values, which is the point.
 
 ## LinuxServer features
 
@@ -144,13 +191,32 @@ See [LinuxServer's documentation](https://docs.linuxserver.io/) for Docker Mods 
 
 ## Updating
 
-CI rebuilds and pushes `ghcr.io/cookiesncache/openclaw:latest` weekly (and on every change), tracking
-upstream OpenClaw releases. On Unraid, enable **CA Auto Update Applications** to pull new images
-automatically.
+CI checks upstream OpenClaw daily and republishes `ghcr.io/cookiesncache/openclaw:latest` **only when
+something that actually goes into the image has changed** — the upstream image, or this repo's
+Dockerfile and `root/` tree. A day where nothing moved produces no push, so your install should not
+see an update prompt for an image that is byte-identical apart from a build timestamp. On Unraid,
+enable **CA Auto Update Applications** to pull new images automatically.
 
-**Tags:** `:latest` tracks upstream. Each build also publishes a version tag matching the upstream
-OpenClaw release (e.g. `ghcr.io/cookiesncache/openclaw:2026.6.10`) plus a short-commit tag — pin one of
-those for reproducibility.
+Every published image is boot-tested first — the gateway has to reach `/healthz` and open its state
+database before the push happens.
+
+**Tags**
+
+| Tag | Use |
+|---|---|
+| `:latest` | tracks upstream |
+| `:<short-sha>` | **the reproducible pin** — one specific build of this repo |
+| `:2026.7.1` | the upstream OpenClaw release this image bundles |
+
+Prefer the short-sha tag when you need reproducibility. The version tag is derived from upstream's
+release number, which does not include their build suffix (`2026.7.1-1`, `2026.7.1-2`) — so two
+different upstream builds can end up sharing one version tag.
+
+**What was this built from?**
+
+```bash
+docker inspect -f '{{ index .Config.Labels "io.cookiesncache.openclaw.upstream.ref" }}'   ghcr.io/cookiesncache/openclaw:latest
+```
 
 ## Limitations
 
@@ -162,6 +228,14 @@ those for reproducibility.
 
 ```bash
 docker build -t ghcr.io/cookiesncache/openclaw:latest .
+```
+
+That resolves `ghcr.io/openclaw/openclaw:latest` for the application and Node runtime. CI instead
+passes a digest and refuses to publish anything unpinned; to reproduce a published image exactly,
+pass the same reference its label reports:
+
+```bash
+docker build --build-arg UPSTREAM_REF=ghcr.io/openclaw/openclaw@sha256:<digest> .
 ```
 
 Design decisions, the upstream-image facts, the native-module ABI constraints, and the LinuxServer
@@ -179,6 +253,8 @@ docker logs -f openclaw                                                   # live
 docker exec -it openclaw bash                                            # shell into the container
 docker inspect -f '{{ index .Config.Labels "build_version" }}' openclaw  # image build version
 docker exec -it openclaw node /app/openclaw.mjs --version                # OpenClaw version
+docker exec -it openclaw openclaw-resolve-bind                           # resolved inbound bind
+docker inspect -f '{{ index .Config.Labels "io.cookiesncache.openclaw.upstream.ref" }}' openclaw
 ```
 
 ## License
