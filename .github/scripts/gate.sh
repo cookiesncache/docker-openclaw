@@ -7,6 +7,18 @@
 #   FORCE_PUBLISH  bypasses the fingerprint gate -> "rebuild even though nothing changed"
 #   FORCE_ADOPT    bypasses the age gate         -> "take the new upstream even if it is young"
 #
+# The age gate reads GitHub's release record (published_at), NOT the image config's `created`.
+# `created` is written by whoever built the image, so in the one scenario the cooldown defends
+# against - a compromised upstream build pipeline - an attacker could zero or backdate it and switch
+# the delay off. The cooldown's whole value is the detection window it buys somebody else, so the
+# field establishing it must be one the artifact cannot write. See release_published_at() and
+# version_newer() below for the full reasoning.
+#
+# When a trustworthy age cannot be established the gate HOLDS and exits non-zero. A red run is the
+# only signal that reaches anyone here, so it is reserved for "I could not make this decision
+# safely" and is never spent on a condition that has a safe fallback - if failures become routine
+# the signal is worthless and this whole design collapses.
+#
 # Distro security patches and upstream releases are different artifacts. APT_EPOCH (below)
 # refreshes the packages this image installs on top of the pinned base once a month, without
 # touching upstream adoption: on a month boundary with a two-day-old upstream you get fresh
@@ -20,13 +32,16 @@
 # build, it is not *in* the image. Keeping it out of the fingerprint means iterating on gate
 # logic does not publish an image to every installed user just to test a decision.
 #
-# Self-test the version-range parser with no registry and no Docker:
+# Self-test the version-range parser and the version guards with no registry and no Docker:
 #     bash .github/scripts/gate.sh --self-test
 set -euo pipefail
 
 UPSTREAM_REPO="${UPSTREAM_REPO:-ghcr.io/openclaw/openclaw}"
 ADVISORY_REPO="${ADVISORY_REPO:-openclaw/openclaw}"
 COOLDOWN_DAYS="${COOLDOWN_DAYS:-3}"
+RELEASES_REPO="${RELEASES_REPO:-openclaw/openclaw}"
+# Overridable so "point the gate at an unreachable API" is a one-line test rather than a code edit.
+GITHUB_API="${GITHUB_API:-https://api.github.com}"
 
 # ---------------------------------------------------------------------------
 # Version ranges
@@ -103,6 +118,47 @@ in_range_either() { # <version> <range>
 }
 
 # ---------------------------------------------------------------------------
+# Candidate version guards
+#
+# The candidate's version string is hostile input: it comes from the SAME image config blob as the
+# timestamp this gate no longer trusts, and it ends up in a request path. Both helpers are pure, so
+# --self-test covers them with no network, no Docker and no registry.
+# ---------------------------------------------------------------------------
+
+# version_ok <version> -> exit 0 when the string is safe to put in a URL path.
+# A whitelist on purpose. Real labels look like 2026.7.1-1 or 2026.8.1-beta.2; anything else is an
+# age-establishment failure, not something to sanitise around.
+version_ok() {
+    local v="$1"
+    [ -n "$v" ] && [ "$v" != "null" ] || return 1
+    [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || return 1
+    return 0
+}
+
+# version_newer <candidate> <published> -> exit 0 when candidate strictly outranks what we ship.
+#
+# Without this, sourcing the date from GitHub is only a PROVENANCE improvement: a compromised build
+# could no longer invent a timestamp, but it could still BORROW a real one by labelling itself with
+# an old release - 2026.6.6 carries a genuine published_at from June - and skip the cooldown exactly
+# as zeroing `created` did. Requiring the candidate to outrank what we ship forces an attacker to
+# name a release at least as new as ours, whose real publish date is recent, so the cooldown bites.
+#
+# dpkg, not semver - the same reasoning as the advisory ranges above. 2026.7.1-1 gt 2026.7.1 and
+# 2026.8.1-beta.2 gt 2026.7.1-1 both hold, so re-pushes and betas order the way upstream means them.
+#
+# Accepted cost, stated plainly: if upstream ever retags :latest to a LOWER-numbered backport this
+# holds and fails every day until a higher release appears. Such releases do exist - v2026.6.33 and
+# v2026.6.34 were published 2026-08-08, after v2026.7.1-2 on 2026-08-04 - but :latest has never
+# moved to one. The escape hatch is the manual `adopt` dispatch.
+version_newer() {
+    local cand="$1" pub="$2"
+    [ -n "$cand" ] && [ "$cand" != "null" ] || return 1
+    [ -n "$pub" ]  && [ "$pub"  != "null" ] || return 1
+    dpkg --compare-versions "$cand" gt "$pub" 2>/dev/null || return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # --self-test: exercise the parser against the shapes the live feed actually contains.
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = "--self-test" ]; then
@@ -160,6 +216,55 @@ if [ "${1:-}" = "--self-test" ]; then
     t "literal null version"                    out "null"        "<= 2026.6.6"
     t "garbage operator"                        out "2026.6.6"    "~> 2026.6.6"
 
+    # ---- version_newer: the replay / borrowed-release guard --------------------------------
+    tn() { # description, expect(new|old), candidate, published
+        local desc="$1" expect="$2" c="$3" p="$4" got
+        if version_newer "$c" "$p"; then got=new; else got=old; fi
+        if [ "$got" = "$expect" ]; then
+            printf '  PASS  %-46s %-18s over %-14s -> %s\n' "$desc" "$c" "$p" "$got"
+        else
+            printf '  FAIL  %-46s %-18s over %-14s -> %s (want %s)\n' "$desc" "$c" "$p" "$got" "$expect"
+            st_fail=1
+        fi
+    }
+    # Real shapes. Measured 2026-08: upstream mints a distinct RELEASE per -N re-push
+    # (v2026.7.1-1 and v2026.7.1-2 were published 2026-08-04, three weeks after v2026.7.1), so
+    # re-pushes carry their own soak clock rather than inheriting the base release's date.
+    tn "build suffix outranks its base release"  new "2026.7.1-1"      "2026.7.1"
+    tn "later build suffix outranks earlier"     new "2026.7.1-2"      "2026.7.1-1"
+    tn "next release outranks a suffixed build"  new "2026.8.1"        "2026.7.1-2"
+    tn "beta outranks the previous release"      new "2026.8.1-beta.2" "2026.7.1-1"
+    # The attack this guard exists to stop: a real but OLD release, borrowed for its genuine date.
+    tn "borrowed older release is rejected"      old "2026.6.6"        "2026.7.1-1"
+    tn "same version, different digest"          old "2026.7.1-1"      "2026.7.1-1"
+    tn "base cannot replace its own re-push"     old "2026.7.1"        "2026.7.1-1"
+    tn "empty candidate"                         old ""                "2026.7.1-1"
+    tn "literal null candidate"                  old "null"            "2026.7.1-1"
+    tn "empty published"                         old "2026.7.1-1"      ""
+
+    # ---- version_ok: this string reaches a request path ------------------------------------
+    tv() { # description, expect(ok|bad), version
+        local desc="$1" expect="$2" v="$3" got
+        if version_ok "$v"; then got=ok; else got=bad; fi
+        if [ "$got" = "$expect" ]; then
+            printf '  PASS  %-46s %-24s -> %s\n' "$desc" "'$v'" "$got"
+        else
+            printf '  FAIL  %-46s %-24s -> %s (want %s)\n' "$desc" "'$v'" "$got" "$expect"
+            st_fail=1
+        fi
+    }
+    tv "plain release"                           ok  "2026.7.1"
+    tv "build suffix"                            ok  "2026.7.1-1"
+    tv "beta"                                    ok  "2026.8.1-beta.2"
+    tv "empty"                                   bad ""
+    tv "literal null"                            bad "null"
+    tv "path traversal"                          bad "../../etc/passwd"
+    tv "embedded space"                          bad "2026.7.1 -1"
+    tv "command separator"                       bad "2026.7.1;id"
+    tv "query injection"                         bad "2026.7.1?per_page=1"
+    tv "leading dash"                            bad "-2026.7.1"
+    tv "over length"                             bad "$(printf '2%.0s' $(seq 1 200))"
+
     if [ "$st_fail" != 0 ]; then
         echo "::error::gate.sh range-parser self-test failed"
         exit 1
@@ -186,7 +291,6 @@ image_config() { # <pinned ref> -> config JSON, or empty on failure
                elif (has("created") or has("Created") or has("config") or has("Config")) then .
                else (.["linux/amd64"] // empty) end' 2>/dev/null || true
 }
-cfg_created() { printf '%s' "$1" | jq -r '(.created // .Created) // empty' 2>/dev/null || true; }
 cfg_version() {
     printf '%s' "$1" \
       | jq -r '((.config.Labels // .Config.Labels) // {})["org.opencontainers.image.version"] // empty' \
@@ -204,6 +308,77 @@ age_days() {
     [ -n "$epoch" ] && [ "$epoch" -gt 0 ] 2>/dev/null || { printf ''; return 0; }
     now="$(date -u +%s)"
     printf '%s' $(( (now - epoch) / 86400 ))
+}
+
+# gh_release_by_tag <tag> [anon] -> release JSON on stdout.
+#   0  HTTP 200      2  HTTP 404 (authoritative: no such release)      3  anything else
+#
+# Deliberately NOT `curl -f`, unlike adv_fetch_page below. That call must tell a JSON array from an
+# error object, which is exactly what -f is for. This one must tell a 404 from a transport failure,
+# which -f flattens into a single non-zero exit - so it reads %{http_code} and branches explicitly.
+# The two are different on purpose; do not unify them.
+gh_release_by_tag() {
+    local t="$1" body code
+    local -a auth=()
+    [ "${2:-}" = "anon" ] || [ -z "${GITHUB_TOKEN:-}" ] || auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    body="$(curl -sS --max-time 20 -w '\n%{http_code}' \
+                 -H 'Accept: application/vnd.github+json' ${auth[@]+"${auth[@]}"} \
+                 "${GITHUB_API}/repos/${RELEASES_REPO}/releases/tags/${t}" 2>/dev/null)" || return 3
+    code="${body##*$'\n'}"
+    case "$code" in
+        200) printf '%s' "${body%$'\n'*}"; return 0 ;;
+        404) return 2 ;;
+        *)   return 3 ;;
+    esac
+}
+
+# release_published_at <version> -> RFC3339 published_at on stdout.
+#   0  found      2  no release matches      3  API unreachable / unexpected status
+#
+# The point of this function: `created` in the image config is written by whoever built the image,
+# so it cannot establish an age the gate is willing to act on. published_at is GitHub's own record.
+#
+# The semantically ideal source would be GHCR's record of when the DIGEST was pushed, but
+# /orgs/openclaw/packages/container/openclaw/versions returns 401 unauthenticated (measured
+# 2026-08-23) and wants a token with read:packages for another organisation - i.e. a long-lived PAT
+# in a repository that publishes container images. That is a worse trade than the problem it solves.
+# The releases endpoint carries published_at, is public, and needs no token at all (also measured).
+#
+# The two exit codes are distinct on purpose. "No release matches" and "API unreachable" produce the
+# same behaviour but are different diagnoses, and a red run that cannot say which is worth far less.
+release_published_at() {
+    local ver="$1" tag body ts rc unreachable=0
+
+    # Upstream tags releases v2026.7.1-1 while the image label reads 2026.7.1-1: the lookup 404s
+    # without the prefix (measured - .../releases/tags/2026.7.1-2 is a 404, v2026.7.1-2 is a 200).
+    # Getting this wrong fails the job EVERY day, which is precisely the routine-failure collapse
+    # this design cannot survive. The bare form is tried too so an upstream that later drops the
+    # prefix does not do the same thing; it costs a request only when the first form already missed.
+    for tag in "v${ver}" "${ver}"; do
+        if body="$(gh_release_by_tag "$tag")"; then
+            :
+        else
+            rc=$?
+            [ "$rc" != 2 ] || continue
+            # A rejected or expired token 401s where an anonymous request would have worked, and
+            # this endpoint needs no token at all - the token is only rate-limit courtesy.
+            if [ -n "${GITHUB_TOKEN:-}" ] && body="$(gh_release_by_tag "$tag" anon)"; then
+                :
+            else
+                rc=$?
+                [ "$rc" = 2 ] || unreachable=1
+                continue
+            fi
+        fi
+        ts="$(printf '%s' "$body" | jq -r '.published_at // empty' 2>/dev/null || true)"
+        # A 200 carrying no published_at (a draft) is not a clean "no such release".
+        [ -n "$ts" ] || { unreachable=1; continue; }
+        printf '%s' "$ts"
+        return 0
+    done
+
+    [ "$unreachable" = 0 ] || return 3
+    return 2
 }
 
 UP_CANDIDATE="$(docker buildx imagetools inspect "$UPSTREAM" --format '{{.Manifest.Digest}}')"
@@ -253,7 +428,6 @@ CAND_INSPECTABLE=false
 if [ -n "$CAND_CFG" ]; then
     CAND_INSPECTABLE=true
     CAND_VER="$(cfg_version "$CAND_CFG")"
-    CAND_AGE="$(age_days "$(cfg_created "$CAND_CFG")")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -277,50 +451,108 @@ if [ "$FORCE_ADOPT" != "true" ] \
    && [ -n "$CAND_VER" ] && [ "$CAND_VER" != "null" ] \
    && [ "$UP_CANDIDATE" != "$UP_PUBLISHED" ]; then
 
-    # Paginated, with a hard cap. Measured 2026-08: this project publishes advisories in bulk -
-    # 300 entries spans roughly ONE month, not the year you might assume - so the window is much
-    # narrower than the page count suggests.
+    # Cursor-paginated, with a hard cap on the number of REQUESTS.
     #
-    # That is still sufficient, for a reason worth writing down: an advisory that affects the
-    # version we are CURRENTLY SHIPPING is, by definition, newly published, so it sits at the top
-    # of this feed. Older advisories cap at older versions and cannot affect a current PUB_VER.
-    # The window only matters if the gate stops running for weeks while upstream keeps shipping,
-    # and in that case the daily build has already stopped being daily.
+    # This endpoint does not honour `page`; it is cursor-paginated and silently ignores the
+    # parameter. Measured 2026-08-23, asking for page=1,2,3 returned the SAME 100 advisories three
+    # times - the three id sets were byte-identical and their union was 100, not 300 - so the gate
+    # only ever saw the newest 100 entries (a window of 2026-05-28..2026-06-30) and two of every
+    # three requests were wasted. The cursor for the next slice arrives in the Link response
+    # header and is opaque: passing after=<ghsa_id> is an HTTP 400, so it cannot be constructed
+    # and must be read back from the header.
+    #
+    # ADV_MAX_PAGES therefore bounds REQUESTS, which is the bound it was always meant to be: at
+    # the default of 3 the gate now reads 300 distinct advisories (roughly three months) instead
+    # of the same 100 three times. The walk also stops early, on the first response whose Link
+    # header carries no rel="next" - the authoritative end-of-feed signal, and unlike a short-page
+    # check it is still correct when the final slice happens to hold exactly 100 entries.
+    #
+    # A bounded window is still sufficient, for a reason worth writing down: an advisory that
+    # affects the version we are CURRENTLY SHIPPING is, by definition, newly published, so it sits
+    # at the top of this feed. Older advisories cap at older versions and cannot affect a current
+    # PUB_VER. The window only matters if the gate stops running for weeks while upstream keeps
+    # shipping, and in that case the daily build has already stopped being daily.
     #
     # GITHUB_TOKEN is a rate-limit courtesy only - the endpoint serves another repo's published
     # advisories unauthenticated, which is also the fallback when the token is absent or rejected.
-    adv_fetch_page() { # <page> -> JSON array on stdout, non-zero on failure
-        local page="$1" out url
-        url="https://api.github.com/repos/${ADVISORY_REPO}/security-advisories?state=published&per_page=100&page=${page}"
+    ADV=""        # advisory JSON array from the most recent request
+    ADV_NEXT=""   # cursor for the following request; empty once the feed is exhausted
+    # Results come back in ADV/ADV_NEXT rather than on stdout, and the caller must therefore
+    # invoke this WITHOUT command substitution: `$(...)` runs the function in a subshell, so the
+    # ADV_NEXT it assigns would die with that subshell, every request would re-fetch the first
+    # slice, and the defect this rewrite exists to remove would be back - silently.
+    adv_fetch_page() { # <cursor> -> sets ADV and ADV_NEXT; non-zero on failure
+        local cursor="$1" url resp headers link
+        # Rebuilt from GITHUB_API on every request, taking only the cursor from the header. The
+        # absolute URL the header offers points at api.github.com by numeric repository id, so
+        # following it verbatim would walk straight past a GITHUB_API override after the first
+        # request - and would let a response header choose the host we talk to.
+        url="${GITHUB_API}/repos/${ADVISORY_REPO}/security-advisories?state=published&per_page=100"
+        [ -z "$cursor" ] || url="${url}&after=${cursor}"
+
         # -fsS matters: without -f, curl exits 0 on an HTTP 403/404 and hands jq a JSON *object*
         # ({"message": "API rate limit exceeded"}) rather than an array, so the fallback would
-        # never fire and the object would be parsed as if it were data.
+        # never fire and the object would be parsed as if it were data. (gh_release_by_tag above
+        # deliberately omits -f because it needs the status code; the two want opposite things.)
+        #
+        # -D - prepends the response headers to stdout so the cursor and the advisories it belongs
+        # to come from ONE request rather than a second lookup.
         if [ -n "${GITHUB_TOKEN:-}" ] \
-           && out="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
+           && resp="$(curl -fsS -D - --max-time 20 -H 'Accept: application/vnd.github+json' \
                           -H "Authorization: Bearer ${GITHUB_TOKEN}" "$url" 2>/dev/null)"; then
-            printf '%s' "$out"; return 0
+            :
+        elif ! resp="$(curl -fsS -D - --max-time 20 -H 'Accept: application/vnd.github+json' "$url" 2>/dev/null)"; then
+            ADV=""
+            ADV_NEXT=""
+            return 1
         fi
-        if out="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' "$url" 2>/dev/null)"; then
-            printf '%s' "$out"; return 0
-        fi
-        return 1
+
+        # HTTP separates headers from body with a blank line. Normalising CR first makes the split
+        # independent of line endings; a bare CR cannot appear inside JSON text - it is escaped as
+        # the two characters \r - so stripping it cannot corrupt the body.
+        resp="${resp//$'\r'/}"
+        headers="${resp%%$'\n\n'*}"
+        ADV="${resp#*$'\n\n'}"
+
+        # Link: <...&after=CURSOR>; rel="next", <...&before=CURSOR>; rel="prev"
+        #
+        # The header NAME is deliberately never matched on, which sidesteps a real trap: HTTP/2
+        # lowercases header names, so the live header is `link:` and a `^Link:` match would find
+        # nothing. The walk would stop after one request and the gate would quietly go back to
+        # reading only the newest 100 advisories - this same bug wearing a different hat, and
+        # silent. Keying on the `>;rel="next"` tail is case-proof and specific enough on its own;
+        # no other response header carries that shape.
+        #
+        # Split on "," so the rel="prev" link - which carries a `before=` cursor - cannot be
+        # mistaken for the next one, and so the bare `Link` token that
+        # access-control-expose-headers contributes to the same split is rejected too. The match
+        # is also unanchored on purpose: the header name rides on the FIRST segment
+        # (`link:<https://...>`) while later segments begin at `<`, so anchoring at `^<` would
+        # find the cursor on every page EXCEPT the first - the one page that always exists.
+        #
+        # No `head -1` anywhere: under `set -o pipefail` a downstream head can SIGPIPE the
+        # producer and fail the substitution. The first match is taken by parameter expansion
+        # instead. The cursor is handed back still percent-encoded, exactly as the server sent it.
+        link="$(printf '%s' "$headers" | tr -d ' ' | tr ',' '\n' \
+                | sed -n 's/.*[?&]after=\([^&>]*\)>;rel="next".*/\1/p' || true)"
+        ADV_NEXT="${link%%$'\n'*}"
+        return 0
     }
 
     RANGES=""
     adv_any=false
-    for adv_page in $(seq 1 "${ADV_MAX_PAGES:-3}"); do
-        if ! ADV="$(adv_fetch_page "$adv_page")"; then
+    adv_cursor=""
+    for adv_req in $(seq 1 "${ADV_MAX_PAGES:-3}"); do
+        if ! adv_fetch_page "$adv_cursor"; then
             if [ "$adv_any" = false ]; then
                 echo "::warning::could not read ${ADVISORY_REPO} security advisories - falling back to the normal cooldown"
             else
-                echo "::warning::advisory page ${adv_page} could not be read - checking only the pages already fetched"
+                echo "::warning::advisory request ${adv_req} could not be read - checking only the advisories already fetched"
             fi
             break
         fi
         adv_any=true
-
-        adv_count="$(printf '%s' "$ADV" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf '0')"
-        [ -n "$adv_count" ] || adv_count=0
+        adv_cursor="$ADV_NEXT"
 
         # The feed mixes packages: @openclaw/feishu, @openclaw/msteams and @openclaw/qqbot
         # advisories sit alongside openclaw ones with near-identical version ranges. Without this
@@ -340,8 +572,8 @@ if [ "$FORCE_ADOPT" != "true" ] \
         [ -z "$adv_ranges" ] || RANGES="${RANGES}${adv_ranges}
 "
 
-        # A short page is the last page.
-        [ "$adv_count" -ge 100 ] 2>/dev/null || break
+        # No rel="next" cursor means this was the last slice of the feed.
+        [ -n "$adv_cursor" ] || break
     done
 
     # Deduplicate: the feed repeats identical ranges heavily (one measurement: 282 entries
@@ -372,6 +604,8 @@ fi
 # ---------------------------------------------------------------------------
 UP_BUILD="$UP_CANDIDATE"
 DECISION="adopt"
+FAIL_REASON=""
+CAND_PUBLISHED=""
 
 if [ "$FORCE_ADOPT" = "true" ]; then
     DECISION="adopt (forced)"
@@ -387,18 +621,62 @@ elif ! docker buildx imagetools inspect "${UPSTREAM_REPO}@${UP_PUBLISHED}" --raw
 elif [ "$CAND_INSPECTABLE" != "true" ]; then
     # Transient registry/network failure: fail CLOSED and retry tomorrow. Cost is one day of
     # delay, which is what this feature is for. Failing open would zero the cooldown on exactly
-    # the day an outage coincides with a fresh release.
+    # the day an outage coincides with a fresh release. Self-correcting and degrades no decision,
+    # so it stays a warning rather than joining the exit-non-zero cases below.
     UP_BUILD="$UP_PUBLISHED"
     DECISION="hold (could not inspect candidate - treating as young)"
     echo "::warning::could not inspect ${UPSTREAM_REPO}@${UP_CANDIDATE} - holding until the next run"
-elif [ -z "$CAND_AGE" ]; then
-    # created missing or zeroed: a permanent upstream property, not an outage. Fail OPEN, or we
-    # would never adopt again.
-    DECISION="adopt (candidate has no usable created timestamp)"
-    echo "::warning::candidate image has no usable 'created' timestamp - adopting without an age check"
-elif [ "$CAND_AGE" -lt "$COOLDOWN_DAYS" ]; then
+elif ! version_ok "$CAND_VER"; then
+    # No join key, so no trustworthy age. Note this is where a STRIPPED version label lands too -
+    # indistinguishable from an upstream that simply stopped setting it, and both need a human.
     UP_BUILD="$UP_PUBLISHED"
-    DECISION="hold (candidate is ${CAND_AGE}d old, cooldown ${COOLDOWN_DAYS}d)"
+    DECISION="hold (candidate version label missing or unusable)"
+    FAIL_REASON="candidate ${UP_CANDIDATE} has no usable org.opencontainers.image.version label (got '${CAND_VER}') - the gate cannot establish a trustworthy age"
+elif ! version_newer "$CAND_VER" "$PUB_VER"; then
+    UP_BUILD="$UP_PUBLISHED"
+    DECISION="hold (candidate ${CAND_VER} does not outrank shipping ${PUB_VER})"
+    FAIL_REASON="candidate claims version ${CAND_VER}, which does not outrank the shipping ${PUB_VER} - a downgrade, or a replay of an already-released version, which is what borrowing an old release date looks like"
+else
+    # Deliberately NO fallback to the image's own `created` in either failure branch below.
+    # Falling back to the field this change exists to distrust, in the exact case where the
+    # trustworthy source is unavailable, defeats the change - better to stop and be told.
+    REL_RC=0
+    CAND_PUBLISHED="$(release_published_at "$CAND_VER")" || REL_RC=$?
+    if [ "$REL_RC" = 2 ]; then
+        UP_BUILD="$UP_PUBLISHED"
+        DECISION="hold (no release matches ${CAND_VER})"
+        FAIL_REASON="no ${RELEASES_REPO} release matches candidate version ${CAND_VER} - an image published with no corresponding release is the shape a compromised build takes"
+    elif [ "$REL_RC" != 0 ]; then
+        UP_BUILD="$UP_PUBLISHED"
+        DECISION="hold (releases API unreachable)"
+        FAIL_REASON="could not read ${RELEASES_REPO} releases from ${GITHUB_API} - the gate cannot establish a trustworthy age for ${CAND_VER}"
+    else
+        CAND_AGE="$(age_days "$CAND_PUBLISHED")"
+        if [ -z "$CAND_AGE" ]; then
+            UP_BUILD="$UP_PUBLISHED"
+            DECISION="hold (release date unusable)"
+            FAIL_REASON="the ${RELEASES_REPO} release for ${CAND_VER} carries an unusable published_at ('${CAND_PUBLISHED}')"
+        elif [ "$CAND_AGE" -lt "$COOLDOWN_DAYS" ]; then
+            UP_BUILD="$UP_PUBLISHED"
+            DECISION="hold (release is ${CAND_AGE}d old, cooldown ${COOLDOWN_DAYS}d)"
+        fi
+    fi
+fi
+
+# A hold must never be silent: nothing bounds it automatically, so this line is how a persistent
+# hold becomes visible. Built once because both the success and the failure path print it.
+UPSTREAM_LOG="upstream: candidate=${UP_CANDIDATE} (${CAND_VER:-unknown}, released ${CAND_PUBLISHED:-unknown}, age ${CAND_AGE:-unknown}d) published=${UP_PUBLISHED:-none} (${PUB_VER:-unknown}) -> ${DECISION}"
+
+# A2 is accepted risk, so there is no issue-notification channel: a red run is the only signal that
+# reaches anyone, and GitHub emails on workflow failure by default. The job is idempotent and runs
+# daily, so a failed run costs at most one day of delay.
+#
+# The diagnostic line goes out FIRST - it is the only context a failure email points at. Nothing is
+# written to $GITHUB_OUTPUT: the job fails, every later step is skipped, and that IS the hold.
+if [ -n "$FAIL_REASON" ]; then
+    echo "::notice::${UPSTREAM_LOG}"
+    echo "::error::${FAIL_REASON}"
+    exit 1
 fi
 
 HASH="$(printf '%s\n%s\n%s\n' "$UP_BUILD" "$REPO_INPUTS" "$APT_EPOCH" | sha256sum | cut -c1-16)"
@@ -419,9 +697,7 @@ fi
     echo "apt_epoch=$APT_EPOCH"
 } >> "$GITHUB_OUTPUT"
 
-# A hold must never be silent: nothing bounds it automatically, so this log line is how a
-# persistent hold becomes visible.
-echo "::notice::upstream: candidate=${UP_CANDIDATE} (${CAND_VER:-unknown}, age ${CAND_AGE:-unknown}d) published=${UP_PUBLISHED:-none} (${PUB_VER:-unknown}) -> ${DECISION}"
+echo "::notice::${UPSTREAM_LOG}"
 if [ "$PUBLISH" = "true" ]; then
     echo "::notice::publishing: fingerprint ${HASH} (published was '${PUBLISHED:-none}', force_publish=${FORCE_PUBLISH}, force_adopt=${FORCE_ADOPT}), building against ${UP_BUILD}"
 else
