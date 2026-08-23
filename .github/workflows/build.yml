@@ -84,8 +84,12 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           IN_FORCE: ${{ inputs.force }}
           IN_ADOPT: ${{ inputs.adopt }}
-          # Rate-limit courtesy for the advisory lookup; it also works unauthenticated, and the
-          # script falls back to that. No extra permission scope is required.
+          # Rate-limit courtesy for the release-date and advisory lookups. Both endpoints serve
+          # another repository's public data unauthenticated (measured), and the script falls back
+          # to that, so no extra permission scope is required. The token matters because the
+          # unauthenticated limit is 60/hour PER IP and Actions runners share egress addresses -
+          # and the gate now FAILS when it cannot establish a release date, so a rate-limit error
+          # would be a red run rather than a shrug.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/gate.sh
 

@@ -179,6 +179,42 @@ such updates a year is already accepted by the tagging policy below.
 A candidate younger than three days is not adopted; `UP_BUILD` stays at the published digest and the
 fingerprint therefore does not move, so a quiet day still publishes nothing.
 
+**The age comes from GitHub's release record, not from the image.** `created` in the image config is
+written by whoever built the image, so in the one scenario the cooldown defends against — a
+compromised upstream build pipeline — an attacker could zero or backdate it and skip the wait. That
+is not a privilege escalation (they already control the payload) but it is worse in a subtler way:
+it removes the delay that exists precisely so somebody else has time to notice. The gate therefore
+reads `published_at` from `GET /repos/openclaw/openclaw/releases/tags/{tag}`.
+
+Three measurements shaped this, all 2026-08-23:
+
+- GHCR's own push record would be the ideal source, but
+  `/orgs/openclaw/packages/container/openclaw/versions` returns **401** unauthenticated and wants a
+  token with `read:packages` for another organisation — i.e. a long-lived PAT in a repository that
+  publishes container images. That is a worse trade than the problem it solves. The releases
+  endpoint needs no token at all.
+- **Release tags carry a `v` prefix that image labels do not.** `.../releases/tags/2026.7.1-2` is a
+  404; `v2026.7.1-2` is a 200. A naive exact-match join would fail *every* run, and since a failed
+  age lookup is now a red run, that would have turned the alarm into noise on day one.
+- **`-N` re-pushes have their own releases.** `v2026.7.1-1` and `v2026.7.1-2` were published
+  2026-08-04, three weeks after `v2026.7.1` (2026-07-13) — they do *not* inherit the base release's
+  date. Keying off the release therefore does not shorten a re-push's soak time, which is what the
+  change was originally expected to cost.
+
+In the healthy case this moves nothing: the live `:latest` reported `created` 2026-08-04T00:45:59Z
+against a release `published_at` of 2026-08-04T00:41:25Z, four and a half minutes apart. It moves
+who is allowed to say it.
+
+**The candidate must also outrank what we ship** (`version_newer`, dpkg not semver). The version
+label lives in the same config blob as `created`, so sourcing the date from GitHub alone would only
+stop an attacker *inventing* a timestamp — they could still *borrow* a real one by labelling the
+image `2026.6.6`, whose genuine `published_at` is months old. Requiring the candidate to outrank the
+shipping version forces them to name a release at least as new as ours, whose real publish date is
+recent, so the cooldown still bites. Accepted cost: if upstream ever retags `:latest` to a
+lower-numbered backport this holds until a higher release appears. Such releases exist — v2026.6.33
+and v2026.6.34 were published 2026-08-08, *after* v2026.7.1-2 on 2026-08-04 — but `:latest` has
+never moved to one, and the manual `adopt` dispatch is the escape hatch.
+
 **There is deliberately no "published upstream is older than N days" escape hatch**, although one
 was drafted. It measures the upstream *release's* age rather than how long we have been holding, so
 once the shipped digest ages past N — which is the normal state between releases; the digest in
@@ -188,12 +224,31 @@ for. The escape hatches are the advisory check and a manual `adopt` dispatch ins
 the hold is unbounded in theory, which is why **every hold is logged with the candidate's age**: a
 persistent hold has to be visible, because nothing bounds it automatically.
 
-Two failure directions are separated deliberately. A registry error reading the candidate's config
-fails **closed** (hold, retry tomorrow — the cost is one day, which is what the feature is for),
-while a `created` field that is missing or zeroed fails **open** (adopt), because that is a
-permanent upstream property and failing closed on it would mean never adopting again. And before
-holding, the published digest is probed for existence: if upstream has garbage-collected it,
-holding would build `FROM` a digest that no longer exists, so the candidate is adopted instead.
+Failure directions are separated deliberately, and the split is now three ways rather than two.
+
+A registry error reading the candidate's config fails **closed** (hold, warn, exit 0 — retry
+tomorrow; the cost is one day, which is what the feature is for). Before holding, the published
+digest is probed for existence: if upstream has garbage-collected it, holding would build `FROM` a
+digest that no longer exists, so the candidate is adopted instead.
+
+But anything that leaves the gate unable to establish a *trustworthy age* — no usable version label,
+a candidate that does not outrank what we ship, an unreachable releases API, or a version with no
+matching release — **holds and exits non-zero**. There is no fall-back to `created` in those
+branches, and that omission is the point: falling back to the field this design exists to distrust,
+in the exact case where the trustworthy source is missing, would defeat it. The old fail-**open** on
+a missing `created` is gone because `created` is no longer read at all.
+
+A2 is accepted risk, so there is no issue-notification channel — which makes a red run the only
+signal that reaches anyone, and a good one: GitHub emails on workflow failure by default, and the
+job is idempotent and runs daily, so a failed run costs at most one day. That only holds while
+failures stay rare, so failure is reserved for "I could not make this decision safely" and is never
+spent on an input that merely *accelerates* adoption. The advisory lookup keeps its warn-and-continue
+behaviour for exactly that reason: losing it falls back to the cooldown you would have had anyway.
+
+The hold is deliberately unbounded. Capping it would need a consecutive-failure counter, and there
+is nowhere to keep one — a hold publishes nothing, so no annotation records it, and the alternatives
+(the Actions cache, a repo variable) either add their own failure mode or need permissions this
+workflow will not take.
 
 ### Adopting early when an advisory says to
 
