@@ -24,8 +24,23 @@ ENV HOME="/config" \
     OPENCLAW_DISABLE_BONJOUR="true" \
     LSIO_FIRST_PARTY="false"
 
+# Cache-busting handle for the apt layer below, and its POSITION IS DELIBERATE.
+#
+# An ARG declared ABOVE a RUN joins that RUN's cache key - visible in `docker history` as the
+# `RUN |n NAME=value ...` prefix - so changing APT_EPOCH forces this layer to re-execute and
+# pick up current Ubuntu security updates for the packages installed here.
+#
+# Do NOT move it down beside BUILD_DATE and VERSION. Those sit at the end precisely so they do
+# NOT invalidate this layer; this one exists to do the opposite. Moving it would silently
+# restore the old behaviour, in which a warm layer cache let the monthly rebuild reuse
+# months-old packages and publish an image differing only in its labels.
+#
+# It MUST be passed identically to BOTH build sites in build.yml - the smoke build and the
+# build-push-action - or the image that gets smoke-tested is not the image that gets pushed.
+# Both read a single value computed once by the gate step.
+ARG APT_EPOCH
 RUN \
-  echo "**** install runtime packages ****" && \
+  echo "**** install runtime packages (apt epoch: ${APT_EPOCH:-unset}) ****" && \
   apt-get update && \
   apt-get install -y --no-install-recommends \
     ca-certificates \

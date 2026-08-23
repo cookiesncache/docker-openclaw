@@ -171,6 +171,7 @@ jobs:
           set -euo pipefail
           docker buildx build --load -t openclaw:smoke \
             --build-arg UPSTREAM_REF='${{ steps.tags.outputs.upstream_ref }}' \
+            --build-arg APT_EPOCH='${{ steps.gate.outputs.apt_epoch }}' \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
             .
@@ -201,12 +202,63 @@ jobs:
             index:org.opencontainers.image.revision=${{ github.sha }}
             index:org.opencontainers.image.version=${{ steps.meta.outputs.version }}
           tags: ${{ steps.tags.outputs.tags }}
+          # APT_EPOCH must be the SAME value the smoke build above used - both read the gate
+          # step's single computed output. Never compute the date here: two `date` calls either
+          # side of midnight UTC would smoke-test one image and push a different one. (Comments
+          # cannot live inside the build-args block below: the action parses every line there as
+          # a literal KEY=VALUE.)
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.date }}
             VERSION=${{ steps.tags.outputs.build_tag }}
             UPSTREAM_REF=${{ steps.tags.outputs.upstream_ref }}
+            APT_EPOCH=${{ steps.gate.outputs.apt_epoch }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # The image that was smoke-tested must be the image that got pushed.
+      #
+      # The two builds are separate invocations that share layers only through the gha cache, so
+      # nothing structurally guarantees they produce identical filesystems: a cache miss, or a
+      # build-arg passed to one and not the other, would silently publish layers that were never
+      # booted. APT_EPOCH makes that hazard real rather than theoretical, because it sits ABOVE
+      # the apt layer - unlike BUILD_DATE and VERSION, a mismatch changes actual content.
+      #
+      # Compared as rootfs diff_ids (uncompressed), which both sides expose: the local image via
+      # docker inspect, the pushed one via its config blob. LABEL-only differences create no
+      # layers, so the BUILD_DATE/VERSION asymmetry between the two builds does not show up here.
+      # ---------------------------------------------------------------------
+      - name: Verify the pushed image is the one that was smoke-tested
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          REPO_PATH="${OWNER}/openclaw"
+          ACCEPT='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json'
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull&service=ghcr.io" | jq -r .token)
+
+          IDX=$(curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
+                  "https://ghcr.io/v2/${REPO_PATH}/manifests/${{ steps.tags.outputs.build_tag }}")
+          MAN_DIGEST=$(printf '%s' "$IDX" | jq -r '.manifests[]? | select(.platform.architecture=="amd64") | .digest')
+          if [ -n "$MAN_DIGEST" ]; then
+            MAN=$(curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
+                    "https://ghcr.io/v2/${REPO_PATH}/manifests/${MAN_DIGEST}")
+          else
+            MAN="$IDX"
+          fi
+          CFG_DIGEST=$(printf '%s' "$MAN" | jq -r '.config.digest')
+          PUSHED=$(curl -fsSL -H "Authorization: Bearer $TOKEN" \
+                     "https://ghcr.io/v2/${REPO_PATH}/blobs/${CFG_DIGEST}" | jq -c '.rootfs.diff_ids')
+          SMOKED=$(docker inspect openclaw:smoke --format '{{json .RootFS.Layers}}' | jq -c '.')
+
+          if [ "$PUSHED" = "$SMOKED" ]; then
+            echo "::notice::pushed image is layer-identical to the smoke-tested image"
+          else
+            echo "::error::the pushed image is NOT the image that was smoke-tested"
+            echo "  smoked: $SMOKED"
+            echo "  pushed: $PUSHED"
+            exit 1
+          fi
 
       # ---------------------------------------------------------------------
       # The published manifest must stay readable by Unraid's update check.

@@ -136,15 +136,45 @@ collapsing them into a single `FORCE` was the original bug.
 |---|---|---|
 | `workflow_dispatch` with `force` | yes | no |
 | `workflow_dispatch` with `adopt` | no | yes |
-| `schedule`, 1st of the month | yes | no |
+| `schedule`, monthly package refresh | see below | no |
 | advisory match (below) | no | yes |
 | anything else | no | no |
 
-The monthly rebuild refreshes apt/distro layers **inside the pinned base**; those live in the base
-image, not in OpenClaw's `/app`. So it needs `FORCE_PUBLISH` and has no business touching adoption —
-on the 1st with a two-day-old upstream you want fresh base layers on the *previously vetted*
-application. And repo-only changes are never blocked by upstream's clock: a fix under `root/` moves
-the fingerprint and publishes immediately, built against the previously published upstream digest.
+Repo-only changes are never blocked by upstream's clock: a fix under `root/` moves the fingerprint
+and publishes immediately, built against the previously published upstream digest.
+
+### Refreshing the apt packages, monthly and deterministically
+
+Package refreshes and upstream releases are different artifacts and now use different mechanisms.
+The LSIO base is pinned by digest, so *its* layers cannot move on their own — base updates arrive
+only as Dependabot digest bumps. But the Dockerfile also installs eight packages from the Ubuntu
+archive (`ca-certificates curl git hostname lsof openssl procps python3`), and those go stale
+between rebuilds. With the fingerprint gate doing its job, an image could otherwise sit unrebuilt
+for months while CVEs accumulated against them.
+
+`APT_EPOCH` (`date -u +%Y-%m`) is passed as a build-arg declared **above** that apt layer, so it
+joins the layer's cache key — visible in `docker history` as the `RUN |n NAME=value` prefix — and a
+new month forces the packages to be reinstalled. It is computed once in `gate.sh`, folded into the
+publish fingerprint, and passed to **both** build sites. So the first fingerprint-checking run of
+each month publishes with fresh packages, and every later run that month is a no-op again.
+
+This replaced a `day -eq 1` `FORCE_PUBLISH`, which was wrong three ways:
+
+- It forced a **push, not a rebuild.** With a warm gha layer cache the apt layer was reused, so the
+  "refresh" published an image differing only in its labels — a phantom update, no security benefit.
+- **Staleness was unbounded, not capped at a month.** Every publish re-accesses that cache entry and
+  resets its 7-day eviction clock, so a month busy enough to keep the cache warm carried the same
+  packages forward indefinitely. It appeared to work only because the gate skips most days, leaving
+  the cache usually cold by the 1st — an accident of eviction, not a design.
+- **A dropped run skipped a whole month.** Schedule delivery is best-effort and `day -eq 1` was
+  evaluated at run time. With the epoch in the fingerprint, the next run of the month publishes
+  instead.
+
+Two consequences worth expecting. A genuine publish early in a new month also refreshes packages,
+which is a feature — the publish was happening anyway — but the layer churn is not a cache
+regression. And a month in which Ubuntu shipped nothing for these eight packages still produces a
+new digest, because re-running apt is never byte-identical (dpkg mtimes, `ld.so.cache`). Twelve
+such updates a year is already accepted by the tagging policy below.
 
 A candidate younger than three days is not adopted; `UP_BUILD` stays at the published digest and the
 fingerprint therefore does not move, so a quiet day still publishes nothing.
