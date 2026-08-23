@@ -16,9 +16,10 @@ services:
       # Leave false. Set true only if you reach the dashboard over plain HTTP with no TLS in
       # front - without it, pairing will fail on a plain-HTTP LAN address.
       - OPENCLAW_ALLOW_INSECURE_AUTH=false
-      # Advanced. Inbound bind. Unset -> 127.0.0.1 when Tailscale Serve is enabled, else lan.
+      # Advanced. Inbound bind mode. Unset -> loopback when Tailscale Serve is enabled, else lan.
       # Set to lan if something must reach IN (reverse proxy, dashboard widget, another
-      # container using the OpenAI-compatible endpoints). Outbound is unaffected.
+      # container using the OpenAI-compatible endpoints), or if you enable Tailscale but keep
+      # a published 18789 port. Outbound is unaffected.
       - OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND:-}
       # Control UI allowed origins (CSRF protection). Set to the URL you reach the UI from,
       # e.g. https://openclaw.YOUR-TAILNET.ts.net  (comma-separated for multiple).

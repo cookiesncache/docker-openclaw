@@ -25,8 +25,8 @@ that hint at boot when insecure auth is off.
 
 | Condition | Bind |
 |---|---|
-| `OPENCLAW_GATEWAY_BIND` set to a non-empty value | that value, verbatim |
-| otherwise, `TAILSCALE_SERVE_PORT` set (Unraid's Tailscale integration) | `127.0.0.1` |
+| `OPENCLAW_GATEWAY_BIND` set to a non-empty value | that value, after alias normalization |
+| otherwise, `TAILSCALE_SERVE_PORT` set (Unraid's Tailscale integration) | `loopback` |
 | otherwise | `lan` — unchanged |
 
 Tailscale Serve runs inside the container and proxies to loopback, so binding the LAN as well only
@@ -41,6 +41,29 @@ OPENCLAW_GATEWAY_BIND=lan
 
 Note that `bind` is inbound-only — OpenClaw reaching *out* to other containers is unaffected and
 needs no configuration.
+
+A published Docker port cannot reach a loopback-bound process (the forward DNATs to `eth0`, not
+`lo`), so with Tailscale enabled `http://<host-ip>:18789` stops working whether or not you remove
+the port mapping. The container cannot see host-side port publishing, so it prints a notice at
+startup rather than trying to correct it.
+
+### Fixed
+
+**`gateway.bind` is now a bind *mode*, not a host address.**
+
+The Tailscale path wrote the literal string `127.0.0.1` into `gateway.bind` and passed it to
+`--bind`. OpenClaw's configuration reference defines `bind` as one of `auto`, `loopback` (default),
+`lan`, `tailnet` or `custom`, and documents host aliases (`0.0.0.0`, `127.0.0.1`, `localhost`,
+`::`, `::1`) as unsupported there. It now emits `loopback`.
+
+If you set `OPENCLAW_GATEWAY_BIND` to a host address yourself, it is normalized to the matching
+mode — `127.0.0.1`/`localhost`/`::1` → `loopback`, `0.0.0.0`/`::` → `lan` — and the container
+logs that it did so. Any other value still passes through untouched. Existing installs self-heal on
+the next boot: the config oneshot rewrites `gateway.bind` every start, so no manual edit of
+`openclaw.json` is needed.
+
+CI now boots a container with `TAILSCALE_SERVE_PORT` set and asserts the gateway is healthy and
+listening on loopback only. That path previously had no coverage, which is how this shipped.
 
 ### Changed
 

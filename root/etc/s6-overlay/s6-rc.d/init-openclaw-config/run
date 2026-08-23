@@ -14,9 +14,35 @@ fi
 
 # Resolve the inbound bind the same way svc-openclaw does, so the config file matches
 # what the service is actually launched with. Fails open to `lan`.
-OPENCLAW_RESOLVED_BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" || OPENCLAW_RESOLVED_BIND="lan"
-[[ -n "${OPENCLAW_RESOLVED_BIND}" ]] || OPENCLAW_RESOLVED_BIND="lan"
+if OPENCLAW_RESOLVED_BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" && [[ -n "${OPENCLAW_RESOLVED_BIND}" ]]; then
+    openclaw_resolver_ok=1
+else
+    openclaw_resolver_ok=0
+    OPENCLAW_RESOLVED_BIND="lan"
+fi
 export OPENCLAW_RESOLVED_BIND
+
+# Human-facing notices about the bind decision. They live HERE and not in the resolver: the
+# resolver's stdout *is* its return value and both callers discard its stderr, so anything it
+# printed would either corrupt the bind value or vanish. This oneshot already prints, and runs
+# before svc-openclaw, so the notices land in `docker logs` ahead of gateway start.
+if [[ "${openclaw_resolver_ok}" == 0 ]]; then
+    # Failing open to `lan` keeps the container reachable, but silently doing so would make a
+    # missing/broken helper look like a working default. Say it out loud.
+    echo "**** WARN: openclaw-resolve-bind failed or returned empty - falling back to bind=lan ****"
+elif [[ -n "${OPENCLAW_GATEWAY_BIND:-}" && "${OPENCLAW_GATEWAY_BIND}" != "${OPENCLAW_RESOLVED_BIND}" ]]; then
+    echo "**** bind: normalized OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND} to ${OPENCLAW_RESOLVED_BIND} - OpenClaw expects a bind mode (auto/loopback/lan/tailnet/custom), not a host address ****"
+fi
+
+# A published Docker port cannot reach a loopback-bound process: the port forward DNATs to eth0,
+# not lo. Enabling Unraid's Tailscale toggle therefore silently kills http://<unraid-ip>:18789
+# for anyone who keeps the shipped port mapping. Nothing in this container can see host-side port
+# publishing, so this cannot be auto-corrected - say so loudly instead.
+if [[ -z "${OPENCLAW_GATEWAY_BIND:-}" && -n "${TAILSCALE_SERVE_PORT:-}" && "${OPENCLAW_RESOLVED_BIND}" == "loopback" ]]; then
+    echo "**** Tailscale detected (TAILSCALE_SERVE_PORT); binding loopback. ****"
+    echo "**** Dashboard reachable via Tailscale Serve only. ****"
+    echo "**** If you publish port 18789, set OPENCLAW_GATEWAY_BIND=lan. ****"
+fi
 
 # Apply security-relevant Control UI / auth config each boot.
 #   OPENCLAW_ALLOW_INSECURE_AUTH         accept auth over plain HTTP. Authoritative WHEN SET;

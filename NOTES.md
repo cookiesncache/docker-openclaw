@@ -13,7 +13,8 @@ repository and docs (last checked 2026-06-28); re-verify before relying on them,
 | Runs as | `node` user, uid 1000 |
 | Config/state home | `$HOME/.openclaw` (state in `.openclaw/state`) |
 | Config file | `~/.openclaw/openclaw.json` (overridable via `OPENCLAW_CONFIG_PATH`) |
-| Default bind | `127.0.0.1` — a non-loopback `--bind` is required to be reachable over the network |
+| Default bind | `loopback` mode — a non-loopback `--bind` is required to be reachable over the network |
+| `bind` values | modes, not addresses: `auto`, `loopback` (default), `lan`, `tailnet`, `custom`. Host aliases (`0.0.0.0`, `127.0.0.1`, `localhost`, `::`, `::1`) are documented as unsupported there. |
 | Port | `18789` (gateway) |
 | Health endpoints | `/healthz`, `/readyz` (aliases `/health`, `/ready`) |
 
@@ -39,7 +40,12 @@ than rebuilding from source:
 Upstream builds from source via pnpm; reproducing that (`pnpm install` + `build:docker` + `ui:build`)
 is high-maintenance, so the copy approach is used instead. Consequences:
 
-- **amd64 only** — the copied binaries are amd64; upstream publishes no arm64.
+- **amd64 only.** Not because upstream lacks arm64 — as of 2026-08 its `:latest` index carries a
+  `linux/arm64` manifest alongside amd64. The blocker is this image's build strategy: a single
+  `FROM ${UPSTREAM_REF} AS upstream` stage supplies both `/app` and the Node binary, and `COPY
+  --from` takes whatever architecture that stage resolved to. Multi-arch would need per-arch
+  upstream stages selected by `TARGETARCH`, plus a multi-platform build and a smoke test that can
+  boot an arm64 image. Tracked separately; out of scope while the image is amd64-only by design.
 - **glibc base + Node major 24 are mandatory.** The copied `node_modules` contains a native state-DB
   module compiled for Node 24 / Debian glibc. Ubuntu Noble (glibc 2.39 ≥ Bookworm's 2.36) is
   forward-compatible. An Alpine/musl base or a different Node major would crash the module on load.
@@ -102,6 +108,22 @@ republishes. That is the correct failure mode — no published image means nothi
 **Fallback** if the copied native module ever fails to load: rebuild from source on the base image, or
 `npm rebuild` the offending module against the installed Node.
 
+### Scheduled-workflow expiry (accepted risk, no machinery)
+
+GitHub disables scheduled workflows after **60 days without repository activity**. A stable repo
+with no commits for two months would silently stop tracking upstream — the exact failure the daily
+cadence exists to prevent.
+
+Deliberately not defended with a keepalive commit or an external pinger. Two weekly Dependabot
+schedules (`github-actions`, `docker`) plus auto-merge for the docker ecosystem mean this repo
+realistically never idles 60 days, and Dependabot merges *are* repository activity. A keepalive
+would need `contents: write`, add bot-commit noise, and require the fingerprint gate to ignore the
+touched path or it would trigger phantom rebuilds; an external pinger adds a credential held
+outside GitHub. Neither cost is worth paying for a risk this shape.
+
+**The signal to watch:** the daily `build` run disappearing from the Actions tab. If Dependabot
+activity ever stops too (upstream actions all archived, base image frozen), revisit this.
+
 ## Tagging
 
 Published on every publish: `:latest`, the bare upstream version (`:2026.7.1`), and an immutable
@@ -161,16 +183,31 @@ s6-overlay v3 layout under `root/etc/s6-overlay/s6-rc.d/`:
 
   | Condition | Bind |
   |---|---|
-  | `OPENCLAW_GATEWAY_BIND` non-empty | verbatim |
-  | else `TAILSCALE_SERVE_PORT` non-empty | `127.0.0.1` |
+  | `OPENCLAW_GATEWAY_BIND` non-empty | that value, after alias normalization |
+  | else `TAILSCALE_SERVE_PORT` non-empty | `loopback` |
   | else | `lan` |
+
+  It emits **bind modes**, never addresses. Legacy host aliases supplied via
+  `OPENCLAW_GATEWAY_BIND` are normalized (`127.0.0.1`/`localhost`/`::1` → `loopback`;
+  `0.0.0.0`/`::` → `lan`, exact case-sensitive matches only) and anything else passes through
+  verbatim so `auto`, `tailnet` and `custom` keep working. Earlier revisions of this image emitted
+  the literal `127.0.0.1` on the Tailscale path, which is precisely the shape upstream documents as
+  unsupported; the normalization exists so installs that copied that value out of the old README
+  self-heal instead of carrying it forward.
 
   Two failure modes are guarded deliberately. The variables are tested for **non-empty**, not merely
   "set", because Unraid passes template variables through even when the field is blank — the same
   reason the oneshot already defends against an empty `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS`. And the
   callers fail **open to `lan`** if the helper is missing or errors: an empty `--bind` would either
-  abort startup or silently fall through to upstream's `127.0.0.1`, leaving a container that runs but
-  cannot be reached through Docker port forwarding.
+  abort startup or silently fall through to upstream's `loopback` default, leaving a container that
+  runs but cannot be reached through Docker port forwarding.
+
+  The resolver prints **nothing** but the resolved value: its stdout *is* its return value, and both
+  callers discard its stderr, so a warning raised there would either corrupt the bind value or
+  vanish. The two human-facing notices — alias normalization, and the Tailscale/loopback warning —
+  are emitted by `init-openclaw-config` instead, which already prints and runs before the gateway
+  starts. Keep it that way; it is also what makes `docker exec <c> openclaw-resolve-bind` usable as
+  a debugging probe.
 
   `bind` is inbound-only; OpenClaw reaching out to other containers is unaffected by it.
 
