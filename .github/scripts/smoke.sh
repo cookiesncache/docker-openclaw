@@ -24,6 +24,23 @@ trap cleanup EXIT
 fail=0
 bad() { echo "::error::$*"; fail=1; }
 
+# Match without a pipe.
+#
+# `producer | grep -q PATTERN` is a trap under `set -o pipefail`: grep -q exits the moment it
+# matches, closing the pipe, so the producer dies of SIGPIPE (141). pipefail then reports 141
+# for the whole pipeline and a SUCCESSFUL match reads as a failure.
+#
+# Worse, it is size dependent: output small enough to fit the 64KB pipe buffer is written
+# before grep exits, no signal is delivered, and the check passes. So it fails intermittently
+# as a container gets chattier. That is exactly how the Tailscale-notice assertion passed in
+# pr-smoke and then failed in build minutes later on the same commit.
+#
+# A here-string feeds grep from a temporary fd rather than a pipe, so there is no producer to
+# signal. Capture command output into a variable first, then match against it.
+has() { # <pattern> <text>
+  grep -q "$1" <<< "$2"
+}
+
 TOKEN="$(openssl rand -hex 24)"
 
 # Start both up front so their ~20s boots overlap rather than serialise.
@@ -161,24 +178,25 @@ else
   echo "    (none)"
 fi
 
-if ! printf '%s\n' "$listeners" | grep -q '^LISTEN '; then
+if ! has '^LISTEN ' "$listeners"; then
   bad "nothing is listening on 18789 - expected a loopback listener with bind=loopback"
   echo "  --- diagnostics (stderr kept this time) ---"
   docker exec "$NAME_TS" sh -c 'cat /proc/net/tcp; echo ---tcp6---; cat /proc/net/tcp6' 2>&1 | sed 's/^/    /' || true
   docker exec "$NAME_TS" lsof -i -P -n 2>&1 | sed 's/^/    lsof: /' || true
-elif printf '%s\n' "$listeners" | grep -q ' wildcard$'; then
+elif has ' wildcard$' "$listeners"; then
   bad "gateway is listening on a wildcard address despite bind=loopback"
-elif ! printf '%s\n' "$listeners" | grep -q ' loopback$'; then
+elif ! has ' loopback$' "$listeners"; then
   bad "gateway is listening on 18789 but not on loopback - expected loopback with bind=loopback"
 fi
 
 # The operator-facing warning. Someone who keeps the shipped port mapping loses the dashboard
 # when they enable Tailscale, and this log line is the only thing that tells them why.
-if docker logs "$NAME_TS" 2>&1 | grep -q 'Tailscale detected'; then
+ts_log="$(docker logs "$NAME_TS" 2>&1 || true)"
+if has 'Tailscale detected' "$ts_log"; then
   echo "  Tailscale notice present in container log"
 else
   bad "the Tailscale/loopback startup notice is missing from the container log"
-  docker logs "$NAME_TS" 2>&1 | tail -40
+  printf '%s\n' "$ts_log" | tail -40
 fi
 
 # ---------------------------------------------------------------------------
