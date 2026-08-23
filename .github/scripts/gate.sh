@@ -7,11 +7,10 @@
 #   FORCE_PUBLISH  bypasses the fingerprint gate -> "rebuild even though nothing changed"
 #   FORCE_ADOPT    bypasses the age gate         -> "take the new upstream even if it is young"
 #
-# Distro security patches and upstream releases are different artifacts. The monthly rebuild
-# refreshes apt/distro layers inside the pinned base; those live in the base image, not in
-# OpenClaw's /app. So it needs FORCE_PUBLISH and has no business touching adoption - on the 1st
-# with a two-day-old upstream you get fresh base layers on the previously vetted application,
-# which is precisely the intent.
+# Distro security patches and upstream releases are different artifacts. APT_EPOCH (below)
+# refreshes the packages this image installs on top of the pinned base once a month, without
+# touching upstream adoption: on a month boundary with a two-day-old upstream you get fresh
+# packages on the previously vetted application, which is precisely the intent.
 #
 # Writes `publish`, `upstream` and `hash` to $GITHUB_OUTPUT. `upstream` is the digest actually
 # built against, so the io.cookiesncache.openclaw.upstream.digest annotation cannot claim a
@@ -217,6 +216,13 @@ PUB_VER="$(jq_ann 'org.opencontainers.image.version')"
 
 REPO_INPUTS="$(git rev-parse HEAD:Dockerfile HEAD:root HEAD:.dockerignore HEAD:.github/workflows/build.yml | sha256sum | cut -c1-16)"
 
+# Month stamp, computed ONCE here and consumed by both build sites. It is a genuine build input:
+# it is passed as a build-arg above the apt layer, so changing it changes the bytes produced.
+# Hashing it therefore belongs in the fingerprint rather than being a special case elsewhere -
+# the first fingerprint-checking run of each month publishes with freshly installed packages,
+# and every later run that month is a no-op again.
+APT_EPOCH="$(date -u +%Y-%m)"
+
 # ---------------------------------------------------------------------------
 # Force flags
 # ---------------------------------------------------------------------------
@@ -231,9 +237,11 @@ if [ "${EVENT_NAME:-}" = "workflow_dispatch" ]; then
     [ "${IN_ADOPT:-false}" != "true" ] || FORCE_ADOPT=true
 fi
 
-if [ "${EVENT_NAME:-}" = "schedule" ] && [ "$(date -u +%-d)" -eq 1 ]; then
-    FORCE_PUBLISH=true   # monthly rebuild for apt/security updates inside the pinned base
-fi
+# There is deliberately no `day -eq 1` FORCE_PUBLISH here any more. The monthly package refresh
+# is expressed through APT_EPOCH in the fingerprint instead, which is strictly better: it cannot
+# be missed if a scheduled run is dropped (the next run of the month publishes instead), and it
+# forces the apt layer to actually re-execute rather than merely forcing a push that a warm
+# layer cache could satisfy with months-old packages.
 
 # ---------------------------------------------------------------------------
 # Candidate metadata
@@ -393,7 +401,7 @@ elif [ "$CAND_AGE" -lt "$COOLDOWN_DAYS" ]; then
     DECISION="hold (candidate is ${CAND_AGE}d old, cooldown ${COOLDOWN_DAYS}d)"
 fi
 
-HASH="$(printf '%s\n%s\n' "$UP_BUILD" "$REPO_INPUTS" | sha256sum | cut -c1-16)"
+HASH="$(printf '%s\n%s\n%s\n' "$UP_BUILD" "$REPO_INPUTS" "$APT_EPOCH" | sha256sum | cut -c1-16)"
 
 # ---------------------------------------------------------------------------
 # Publish decision
@@ -408,6 +416,7 @@ fi
     echo "publish=$PUBLISH"
     echo "upstream=$UP_BUILD"
     echo "hash=$HASH"
+    echo "apt_epoch=$APT_EPOCH"
 } >> "$GITHUB_OUTPUT"
 
 # A hold must never be silent: nothing bounds it automatically, so this log line is how a
