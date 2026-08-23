@@ -40,12 +40,23 @@ than rebuilding from source:
 Upstream builds from source via pnpm; reproducing that (`pnpm install` + `build:docker` + `ui:build`)
 is high-maintenance, so the copy approach is used instead. Consequences:
 
-- **amd64 only.** Not because upstream lacks arm64 — as of 2026-08 its `:latest` index carries a
-  `linux/arm64` manifest alongside amd64. The blocker is this image's build strategy: a single
-  `FROM ${UPSTREAM_REF} AS upstream` stage supplies both `/app` and the Node binary, and `COPY
-  --from` takes whatever architecture that stage resolved to. Multi-arch would need per-arch
-  upstream stages selected by `TARGETARCH`, plus a multi-platform build and a smoke test that can
-  boot an arm64 image. Tracked separately; out of scope while the image is amd64-only by design.
+- **amd64 only, by choice rather than by constraint.** Both dependencies support arm64: upstream's
+  `:latest` index carries a `linux/arm64` manifest alongside amd64, and so does the LSIO base at the
+  digest pinned here (checked 2026-08-23).
+
+  The Dockerfile itself likely needs no change. In a buildx multi-platform build `FROM
+  ${UPSTREAM_REF}` resolves to the matching platform variant for each target and `COPY
+  --from=upstream` follows it, so no `TARGETARCH` selection is required. That holds **only because
+  both pins are index digests**: the gate resolves `{{.Manifest.Digest}}`, which on a multi-arch tag
+  is the index, and the base pin is an index too. Pin either to a platform-specific manifest digest
+  and per-platform resolution silently stops working - worth knowing before anyone tidies the
+  pinning.
+
+  The real blocker is the smoke test, not the build. `smoke.sh` boots containers and asserts against
+  a live gateway, `--load` does not accept multi-platform output, and booting arm64 on an amd64
+  runner needs QEMU - so build-locally-then-smoke-then-push would have to be restructured. The
+  native state-DB module would also need the glibc argument below re-checked for arm64 rather than
+  assumed to transfer. See the multi-arch tracking issue; out of scope while nobody has asked for it.
 - **glibc base + Node major 24 are mandatory.** The copied `node_modules` contains a native state-DB
   module compiled for Node 24 / Debian glibc. Ubuntu Noble (glibc 2.39 ≥ Bookworm's 2.36) is
   forward-compatible. An Alpine/musl base or a different Node major would crash the module on load.
