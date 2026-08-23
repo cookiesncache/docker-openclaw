@@ -451,50 +451,108 @@ if [ "$FORCE_ADOPT" != "true" ] \
    && [ -n "$CAND_VER" ] && [ "$CAND_VER" != "null" ] \
    && [ "$UP_CANDIDATE" != "$UP_PUBLISHED" ]; then
 
-    # Paginated, with a hard cap. Measured 2026-08: this project publishes advisories in bulk -
-    # 300 entries spans roughly ONE month, not the year you might assume - so the window is much
-    # narrower than the page count suggests.
+    # Cursor-paginated, with a hard cap on the number of REQUESTS.
     #
-    # That is still sufficient, for a reason worth writing down: an advisory that affects the
-    # version we are CURRENTLY SHIPPING is, by definition, newly published, so it sits at the top
-    # of this feed. Older advisories cap at older versions and cannot affect a current PUB_VER.
-    # The window only matters if the gate stops running for weeks while upstream keeps shipping,
-    # and in that case the daily build has already stopped being daily.
+    # This endpoint does not honour `page`; it is cursor-paginated and silently ignores the
+    # parameter. Measured 2026-08-23, asking for page=1,2,3 returned the SAME 100 advisories three
+    # times - the three id sets were byte-identical and their union was 100, not 300 - so the gate
+    # only ever saw the newest 100 entries (a window of 2026-05-28..2026-06-30) and two of every
+    # three requests were wasted. The cursor for the next slice arrives in the Link response
+    # header and is opaque: passing after=<ghsa_id> is an HTTP 400, so it cannot be constructed
+    # and must be read back from the header.
+    #
+    # ADV_MAX_PAGES therefore bounds REQUESTS, which is the bound it was always meant to be: at
+    # the default of 3 the gate now reads 300 distinct advisories (roughly three months) instead
+    # of the same 100 three times. The walk also stops early, on the first response whose Link
+    # header carries no rel="next" - the authoritative end-of-feed signal, and unlike a short-page
+    # check it is still correct when the final slice happens to hold exactly 100 entries.
+    #
+    # A bounded window is still sufficient, for a reason worth writing down: an advisory that
+    # affects the version we are CURRENTLY SHIPPING is, by definition, newly published, so it sits
+    # at the top of this feed. Older advisories cap at older versions and cannot affect a current
+    # PUB_VER. The window only matters if the gate stops running for weeks while upstream keeps
+    # shipping, and in that case the daily build has already stopped being daily.
     #
     # GITHUB_TOKEN is a rate-limit courtesy only - the endpoint serves another repo's published
     # advisories unauthenticated, which is also the fallback when the token is absent or rejected.
-    adv_fetch_page() { # <page> -> JSON array on stdout, non-zero on failure
-        local page="$1" out url
-        url="${GITHUB_API}/repos/${ADVISORY_REPO}/security-advisories?state=published&per_page=100&page=${page}"
+    ADV=""        # advisory JSON array from the most recent request
+    ADV_NEXT=""   # cursor for the following request; empty once the feed is exhausted
+    # Results come back in ADV/ADV_NEXT rather than on stdout, and the caller must therefore
+    # invoke this WITHOUT command substitution: `$(...)` runs the function in a subshell, so the
+    # ADV_NEXT it assigns would die with that subshell, every request would re-fetch the first
+    # slice, and the defect this rewrite exists to remove would be back - silently.
+    adv_fetch_page() { # <cursor> -> sets ADV and ADV_NEXT; non-zero on failure
+        local cursor="$1" url resp headers link
+        # Rebuilt from GITHUB_API on every request, taking only the cursor from the header. The
+        # absolute URL the header offers points at api.github.com by numeric repository id, so
+        # following it verbatim would walk straight past a GITHUB_API override after the first
+        # request - and would let a response header choose the host we talk to.
+        url="${GITHUB_API}/repos/${ADVISORY_REPO}/security-advisories?state=published&per_page=100"
+        [ -z "$cursor" ] || url="${url}&after=${cursor}"
+
         # -fsS matters: without -f, curl exits 0 on an HTTP 403/404 and hands jq a JSON *object*
         # ({"message": "API rate limit exceeded"}) rather than an array, so the fallback would
-        # never fire and the object would be parsed as if it were data.
+        # never fire and the object would be parsed as if it were data. (gh_release_by_tag above
+        # deliberately omits -f because it needs the status code; the two want opposite things.)
+        #
+        # -D - prepends the response headers to stdout so the cursor and the advisories it belongs
+        # to come from ONE request rather than a second lookup.
         if [ -n "${GITHUB_TOKEN:-}" ] \
-           && out="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
+           && resp="$(curl -fsS -D - --max-time 20 -H 'Accept: application/vnd.github+json' \
                           -H "Authorization: Bearer ${GITHUB_TOKEN}" "$url" 2>/dev/null)"; then
-            printf '%s' "$out"; return 0
+            :
+        elif ! resp="$(curl -fsS -D - --max-time 20 -H 'Accept: application/vnd.github+json' "$url" 2>/dev/null)"; then
+            ADV=""
+            ADV_NEXT=""
+            return 1
         fi
-        if out="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' "$url" 2>/dev/null)"; then
-            printf '%s' "$out"; return 0
-        fi
-        return 1
+
+        # HTTP separates headers from body with a blank line. Normalising CR first makes the split
+        # independent of line endings; a bare CR cannot appear inside JSON text - it is escaped as
+        # the two characters \r - so stripping it cannot corrupt the body.
+        resp="${resp//$'\r'/}"
+        headers="${resp%%$'\n\n'*}"
+        ADV="${resp#*$'\n\n'}"
+
+        # Link: <...&after=CURSOR>; rel="next", <...&before=CURSOR>; rel="prev"
+        #
+        # The header NAME is deliberately never matched on, which sidesteps a real trap: HTTP/2
+        # lowercases header names, so the live header is `link:` and a `^Link:` match would find
+        # nothing. The walk would stop after one request and the gate would quietly go back to
+        # reading only the newest 100 advisories - this same bug wearing a different hat, and
+        # silent. Keying on the `>;rel="next"` tail is case-proof and specific enough on its own;
+        # no other response header carries that shape.
+        #
+        # Split on "," so the rel="prev" link - which carries a `before=` cursor - cannot be
+        # mistaken for the next one, and so the bare `Link` token that
+        # access-control-expose-headers contributes to the same split is rejected too. The match
+        # is also unanchored on purpose: the header name rides on the FIRST segment
+        # (`link:<https://...>`) while later segments begin at `<`, so anchoring at `^<` would
+        # find the cursor on every page EXCEPT the first - the one page that always exists.
+        #
+        # No `head -1` anywhere: under `set -o pipefail` a downstream head can SIGPIPE the
+        # producer and fail the substitution. The first match is taken by parameter expansion
+        # instead. The cursor is handed back still percent-encoded, exactly as the server sent it.
+        link="$(printf '%s' "$headers" | tr -d ' ' | tr ',' '\n' \
+                | sed -n 's/.*[?&]after=\([^&>]*\)>;rel="next".*/\1/p' || true)"
+        ADV_NEXT="${link%%$'\n'*}"
+        return 0
     }
 
     RANGES=""
     adv_any=false
-    for adv_page in $(seq 1 "${ADV_MAX_PAGES:-3}"); do
-        if ! ADV="$(adv_fetch_page "$adv_page")"; then
+    adv_cursor=""
+    for adv_req in $(seq 1 "${ADV_MAX_PAGES:-3}"); do
+        if ! adv_fetch_page "$adv_cursor"; then
             if [ "$adv_any" = false ]; then
                 echo "::warning::could not read ${ADVISORY_REPO} security advisories - falling back to the normal cooldown"
             else
-                echo "::warning::advisory page ${adv_page} could not be read - checking only the pages already fetched"
+                echo "::warning::advisory request ${adv_req} could not be read - checking only the advisories already fetched"
             fi
             break
         fi
         adv_any=true
-
-        adv_count="$(printf '%s' "$ADV" | jq -r 'if type == "array" then length else 0 end' 2>/dev/null || printf '0')"
-        [ -n "$adv_count" ] || adv_count=0
+        adv_cursor="$ADV_NEXT"
 
         # The feed mixes packages: @openclaw/feishu, @openclaw/msteams and @openclaw/qqbot
         # advisories sit alongside openclaw ones with near-identical version ranges. Without this
@@ -514,8 +572,8 @@ if [ "$FORCE_ADOPT" != "true" ] \
         [ -z "$adv_ranges" ] || RANGES="${RANGES}${adv_ranges}
 "
 
-        # A short page is the last page.
-        [ "$adv_count" -ge 100 ] 2>/dev/null || break
+        # No rel="next" cursor means this was the last slice of the feed.
+        [ -n "$adv_cursor" ] || break
     done
 
     # Deduplicate: the feed repeats identical ranges heavily (one measurement: 282 entries
