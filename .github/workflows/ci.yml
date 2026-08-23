@@ -1,8 +1,15 @@
 name: ci
 
 on:
+  # Deliberately NOT filtered to `branches: [main]`. That filter keys on the PR's BASE, so a
+  # stacked PR - one opened against another PR's branch - got no CI at all, and its checks only
+  # started once the parent merged and GitHub retargeted it. That is precisely backwards: the
+  # stacked PR is the one whose diff nobody has run yet.
+  #
+  # It bit #10, which added a CI step of its own and sat unverified until #9 merged. Running on
+  # every PR base costs one job per push to any PR; that is cheaper than merging a parent to find
+  # out whether the child was ever tested.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
