@@ -287,9 +287,16 @@ would have had anyway.
 advisories. A fix shipped quietly inside a release with no GHSA gets the normal cooldown. Matching
 release-note text for `CVE-|GHSA-|security` would widen coverage, but a false positive there means
 adopting an unvetted release — exactly what the gate exists to prevent — so advisory-only is the
-defensible default. The feed is also read newest-first with a page cap; measured 2026-08 that is
-about a month of history, which is sufficient only because an advisory affecting the version we are
-*currently* shipping is by definition newly published and therefore at the top of it.
+defensible default. The feed is also read newest-first, and only as far back as `ADV_MAX_PAGES`
+requests of 100 entries reach — measured 2026-08-23, three requests cover roughly three months.
+That is sufficient only because an advisory affecting the version we are *currently* shipping is by
+definition newly published and therefore at the top of it.
+
+That endpoint is cursor-paginated, following the `after` cursor in the `Link` response header; it
+ignores a `page` parameter rather than rejecting one. Until 2026-08 this code passed `page`, so all
+three requests returned the *same* newest 100 advisories — one month of history, not three, and two
+of every three requests wasted. The window figure quoted here before was right by coincidence and
+the mechanism it named was not, which is why the cap is now described in requests.
 
 Worth doing once, outside CI: watch the OpenClaw repository's security advisories in GitHub's UI so
 a human gets an email too. The pipeline must not depend on it.
