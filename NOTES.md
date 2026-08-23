@@ -105,6 +105,99 @@ differing only in `BUILD_DATE`, which every Unraid install would see as a phanto
 Its one real limitation: deleting the GHCR package version loses the marker and the next run
 republishes. That is the correct failure mode — no published image means nothing to compare against.
 
+The logic lives in `.github/scripts/gate.sh`, not inline in the workflow, and that placement is
+load-bearing: `build.yml` **is** one of the hashed inputs, so while the gate lived inside it every
+edit to the gate moved the fingerprint and published an image to every install just to test a
+decision. `gate.sh` chooses *which* image to build; it is not *in* the image, so it is correctly
+outside the input set.
+
+### Which upstream, not whether to build
+
+The gate answers two independent questions, and they need two independent override flags —
+collapsing them into a single `FORCE` was the original bug.
+
+| Flag | Bypasses | Means |
+|---|---|---|
+| `FORCE_PUBLISH` | the fingerprint gate | "rebuild even though nothing changed" |
+| `FORCE_ADOPT` | the age gate | "take the new upstream even if it is young" |
+
+| Trigger | `FORCE_PUBLISH` | `FORCE_ADOPT` |
+|---|---|---|
+| `workflow_dispatch` with `force` | yes | no |
+| `workflow_dispatch` with `adopt` | no | yes |
+| `schedule`, 1st of the month | yes | no |
+| advisory match (below) | no | yes |
+| anything else | no | no |
+
+The monthly rebuild refreshes apt/distro layers **inside the pinned base**; those live in the base
+image, not in OpenClaw's `/app`. So it needs `FORCE_PUBLISH` and has no business touching adoption —
+on the 1st with a two-day-old upstream you want fresh base layers on the *previously vetted*
+application. And repo-only changes are never blocked by upstream's clock: a fix under `root/` moves
+the fingerprint and publishes immediately, built against the previously published upstream digest.
+
+A candidate younger than three days is not adopted; `UP_BUILD` stays at the published digest and the
+fingerprint therefore does not move, so a quiet day still publishes nothing.
+
+**There is deliberately no "published upstream is older than N days" escape hatch**, although one
+was drafted. It measures the upstream *release's* age rather than how long we have been holding, so
+once the shipped digest ages past N — which is the normal state between releases; the digest in
+production while this was written was 18.8 days old — the clause stops applying and every new
+candidate is adopted at age zero. That inverts the feature in exactly the steady state it exists
+for. The escape hatches are the advisory check and a manual `adopt` dispatch instead. In exchange
+the hold is unbounded in theory, which is why **every hold is logged with the candidate's age**: a
+persistent hold has to be visible, because nothing bounds it automatically.
+
+Two failure directions are separated deliberately. A registry error reading the candidate's config
+fails **closed** (hold, retry tomorrow — the cost is one day, which is what the feature is for),
+while a `created` field that is missing or zeroed fails **open** (adopt), because that is a
+permanent upstream property and failing closed on it would mean never adopting again. And before
+holding, the published digest is probed for existence: if upstream has garbage-collected it,
+holding would build `FROM` a digest that no longer exists, so the candidate is adopted instead.
+
+### Adopting early when an advisory says to
+
+The cooldown must not delay a disclosed vulnerability fix, and must not depend on anyone noticing
+one. Each run reads `GET /repos/openclaw/openclaw/security-advisories?state=published` and sets
+`FORCE_ADOPT` when the version **currently shipping** is inside a vulnerable range and the candidate
+is outside it. The question is whether *we* are exposed, not whether an advisory exists.
+
+Things that were not obvious and cost time to establish:
+
+- **Compare with `dpkg --compare-versions`, not semver.** Advisory ranges carry the build suffix —
+  `GHSA-3cvx-236h-m9fj` really reads `<= 2026.2.19-2`. semver treats `-2` as a *prerelease* and
+  orders it **before** `2026.2.19`; dpkg treats it as revision 2 and orders it **after**. The
+  advisory author means "every build through `-2`", which is dpkg's reading.
+- **Never hand the npm operator to dpkg.** dpkg's `<` and `>` are obsolete aliases for `<=` and
+  `>=`. The live feed contains `>= 2026.5.20, < 2026.6.9`, so a pass-through would make `2026.6.9`
+  — the fixed release — test as still vulnerable, and force-adopt in the *unsafe* direction.
+- **Filter on the package name.** `@openclaw/feishu`, `@openclaw/msteams` and `@openclaw/qqbot`
+  advisories share the feed with near-identical ranges. Without the filter a plugin advisory would
+  force-adopt an unvetted gateway release — the precise false positive the cooldown prevents. Those
+  plugins are not even in this image; they install at runtime into `/config/.openclaw/npm`. Matched
+  case-insensitively, because some advisories are filed against `Openclaw`/`OpenClaw`.
+- **Ranges are not uniformly formatted.** Eight live entries omit the space after the operator
+  (`<=2026.5.5`), and a naive `${part%% *}` split also dies on the leading space that an
+  `IFS=','` split leaves on every comparator after the first. Both shapes are handled, and both are
+  covered by `gate.sh --self-test`, which runs on every PR against a real `dpkg`.
+- **Compare both the full and the base version.** The image label carries the build suffix
+  (`2026.7.1-1`) while advisory ranges are usually bare, so `2026.6.6-1` would sort *outside*
+  `<= 2026.6.6` under dpkg. Exposure is checked against both forms.
+
+Everything here fails closed on adoption and never fails the job: an API error, an unparseable
+range, or a missing version annotation all fall back to the normal cooldown, which is the wait you
+would have had anyway.
+
+**Stated limitation.** This catches vulnerabilities OpenClaw publishes as repository security
+advisories. A fix shipped quietly inside a release with no GHSA gets the normal cooldown. Matching
+release-note text for `CVE-|GHSA-|security` would widen coverage, but a false positive there means
+adopting an unvetted release — exactly what the gate exists to prevent — so advisory-only is the
+defensible default. The feed is also read newest-first with a page cap; measured 2026-08 that is
+about a month of history, which is sufficient only because an advisory affecting the version we are
+*currently* shipping is by definition newly published and therefore at the top of it.
+
+Worth doing once, outside CI: watch the OpenClaw repository's security advisories in GitHub's UI so
+a human gets an email too. The pipeline must not depend on it.
+
 **Fallback** if the copied native module ever fails to load: rebuild from source on the base image, or
 `npm rebuild` the offending module against the installed Node.
 

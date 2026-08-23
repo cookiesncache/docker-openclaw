@@ -17,6 +17,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The advisory version-range parser, checked against the shapes the live GitHub advisory
+      # feed actually contains - suffixed bounds, multi-comparator ranges, missing spaces after
+      # the operator, and the strict `<` boundary that proves npm operators are translated rather
+      # than handed to dpkg (whose `<` silently means `<=`). Needs no registry and no Docker, but
+      # does need a real dpkg, which is why it lives in CI rather than only in a local check.
+      - name: Gate version-range self-test
+        run: bash .github/scripts/gate.sh --self-test
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
