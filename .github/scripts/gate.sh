@@ -158,6 +158,21 @@ version_newer() {
     return 0
 }
 
+# release_tag_candidates <version> -> newline-separated release tags to try, most-specific first.
+#
+# Exact forms first (v-prefixed, then bare) - upstream normally cuts one release per exact version
+# label. Only if BOTH miss does release_published_at fall back to these same two forms with
+# everything from the FIRST hyphen stripped (%%, not %: "2026.7.1-rc-1" must strip to the release
+# base "2026.7.1", not the still-suffixed "2026.7.1-rc"). Pure and self-contained so --self-test
+# can prove the dedupe and the %%-vs-% distinction with no network.
+release_tag_candidates() {
+    local ver="$1" base="${1%%-*}"
+    printf '%s\n' "v${ver}" "${ver}"
+    # No hyphen means base == ver, so the stripped forms would just repeat the exact ones above -
+    # skip them rather than spending two more requests for zero benefit on every total miss.
+    [ "$base" = "$ver" ] || printf '%s\n' "v${base}" "${base}"
+}
+
 # ---------------------------------------------------------------------------
 # --self-test: exercise the parser against the shapes the live feed actually contains.
 # ---------------------------------------------------------------------------
@@ -265,6 +280,22 @@ if [ "${1:-}" = "--self-test" ]; then
     tv "leading dash"                            bad "-2026.7.1"
     tv "over length"                             bad "$(printf '2%.0s' $(seq 1 200))"
 
+    # ---- release_tag_candidates: the tag-fallback list itself ------------------------------
+    tc() { # description, version, expected candidates...
+        local desc="$1" v="$2"; shift 2
+        local -a want=("$@") got=()
+        mapfile -t got < <(release_tag_candidates "$v")
+        if [ "${#got[@]}" = "${#want[@]}" ] && [ "${got[*]}" = "${want[*]}" ]; then
+            printf '  PASS  %-46s %-14s -> %s\n' "$desc" "$v" "${got[*]}"
+        else
+            printf '  FAIL  %-46s %-14s -> %s (want %s)\n' "$desc" "$v" "${got[*]}" "${want[*]}"
+            st_fail=1
+        fi
+    }
+    tc "suffixed version: 4 candidates, exact forms first"    "2026.7.1-2"     "v2026.7.1-2" "2026.7.1-2" "v2026.7.1" "2026.7.1"
+    tc "bare version dedupes to exactly 2 candidates"         "2026.7.1"       "v2026.7.1" "2026.7.1"
+    tc "multi-hyphen version strips at the FIRST hyphen only" "2026.7.1-rc-1"  "v2026.7.1-rc-1" "2026.7.1-rc-1" "v2026.7.1" "2026.7.1"
+
     if [ "$st_fail" != 0 ]; then
         echo "::error::gate.sh range-parser self-test failed"
         exit 1
@@ -346,15 +377,23 @@ gh_release_by_tag() {
 #
 # The two exit codes are distinct on purpose. "No release matches" and "API unreachable" produce the
 # same behaviour but are different diagnoses, and a red run that cannot say which is worth far less.
+#
+# The stripped-tag fallback (see release_tag_candidates) exists because upstream has shipped an
+# image labelled ...-N with no dedicated release for that exact build, while the base version's
+# release does exist. Refusing that match turns an upstream naming quirk into a hold that repeats
+# every day forever - the routine-failure collapse this design cannot survive (see file header).
+# It narrows, but does not remove, the "no release in any form" anomaly check below: a candidate
+# matched on a stripped tag inherits that base release's published_at rather than having one of
+# its own. The load-bearing property is untouched either way - age still comes from a real GitHub
+# release, never the image's own `created` - so this is a narrower anomaly detector, not a weaker
+# provenance one. Always logged with a `::warning::`, never silent.
 release_published_at() {
     local ver="$1" tag body ts rc unreachable=0
+    local -a tags
+    mapfile -t tags < <(release_tag_candidates "$ver")
 
-    # Upstream tags releases v2026.7.1-1 while the image label reads 2026.7.1-1: the lookup 404s
-    # without the prefix (measured - .../releases/tags/2026.7.1-2 is a 404, v2026.7.1-2 is a 200).
-    # Getting this wrong fails the job EVERY day, which is precisely the routine-failure collapse
-    # this design cannot survive. The bare form is tried too so an upstream that later drops the
-    # prefix does not do the same thing; it costs a request only when the first form already missed.
-    for tag in "v${ver}" "${ver}"; do
+    # See release_tag_candidates() above for what's tried, in what order, and why.
+    for tag in "${tags[@]}"; do
         if body="$(gh_release_by_tag "$tag")"; then
             :
         else
@@ -373,6 +412,13 @@ release_published_at() {
         ts="$(printf '%s' "$body" | jq -r '.published_at // empty' 2>/dev/null || true)"
         # A 200 carrying no published_at (a draft) is not a clean "no such release".
         [ -n "$ts" ] || { unreachable=1; continue; }
+        # Stderr, not stdout: CAND_PUBLISHED is filled by $(...) capturing this function's stdout,
+        # so anything printed here would corrupt it. A direct write to an inherited fd like stderr
+        # is unaffected by the subshell $(...) forks for the capture - only variable ASSIGNMENTS
+        # die at that boundary (see adv_fetch_page's comment on the same trap, a different case).
+        if [ "$tag" != "v${ver}" ] && [ "$tag" != "${ver}" ]; then
+            echo "::warning::no release tagged v${ver} or ${ver}; using ${tag} (published ${ts}) for age" >&2
+        fi
         printf '%s' "$ts"
         return 0
     done
