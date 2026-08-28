@@ -381,6 +381,56 @@ release_published_at() {
     return 2
 }
 
+# latest_stable_version -> highest-ranked non-prerelease release version on stdout; empty on any
+# failure.  Non-zero only when the feed could not be read at all.
+#
+# This answers a question the digest comparison cannot: `:latest` moving is upstream's decision, so
+# a gate that only ever looks at `:latest` cannot tell "upstream has published nothing new" from
+# "upstream published something new and did not move the tag". Those look identical from here - a
+# fingerprint that matches - and the second one hid a 23-day-old release (2026.7.1-2, a distinct
+# digest published 2026-08-04 that `:latest` never moved to) until somebody read the logs by hand.
+#
+# Prereleases and drafts are dropped: upstream ships betas continuously (2026.8.1-beta.3 and
+# friends) and pointing them out every single day is precisely the routine noise this file's header
+# refuses to spend a signal on.
+#
+# Bounded to one page - 100 releases, roughly a year at upstream's cadence - because this only
+# reports, and a drift big enough to fall off that window is not one a warning is going to rescue.
+latest_stable_version() {
+    local url resp tag ver best=""
+    url="${GITHUB_API}/repos/${RELEASES_REPO}/releases?per_page=100"
+
+    # Same token-then-anonymous fallback as gh_release_by_tag: the endpoint is public (measured),
+    # so GITHUB_TOKEN is rate-limit courtesy and a rejected one must not be the end of the attempt.
+    # -f here, unlike gh_release_by_tag, because this one only needs "did I get an array or not" -
+    # there is no 404-vs-outage distinction to preserve, since both outcomes produce no warning.
+    if [ -n "${GITHUB_TOKEN:-}" ] \
+       && resp="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
+                      -H "Authorization: Bearer ${GITHUB_TOKEN}" "$url" 2>/dev/null)"; then
+        :
+    elif ! resp="$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' "$url" 2>/dev/null)"; then
+        return 1
+    fi
+
+    # Strip the `v` the release tags carry and the image labels do not - the same mismatch
+    # release_published_at compensates for in the other direction.
+    while IFS= read -r tag; do
+        [ -n "$tag" ] || continue
+        ver="${tag#v}"
+        # Release names are hostile input on the same footing as the image label: this one is only
+        # ever printed, but a tag is attacker-influenced text and version_ok is the existing answer.
+        version_ok "$ver" || continue
+        if [ -z "$best" ] || version_newer "$ver" "$best"; then
+            best="$ver"
+        fi
+    done <<EOF
+$(printf '%s' "$resp" | jq -r '.[] | select((.prerelease | not) and (.draft | not)) | .tag_name // empty' 2>/dev/null || true)
+EOF
+
+    printf '%s' "$best"
+    return 0
+}
+
 UP_CANDIDATE="$(docker buildx imagetools inspect "$UPSTREAM" --format '{{.Manifest.Digest}}')"
 
 PUB_RAW="$(docker buildx imagetools inspect "$IMAGE:latest" --raw 2>/dev/null || printf '{}')"
@@ -606,6 +656,12 @@ UP_BUILD="$UP_CANDIDATE"
 DECISION="adopt"
 FAIL_REASON=""
 CAND_PUBLISHED=""
+# Distinguishes "the age lookup ran and came back empty" from "the age lookup never ran". Both leave
+# CAND_AGE empty, and collapsing them in the log cost somebody a three-day investigation into a
+# lookup that was working: on the `adopt (unchanged)` path below the lookup is deliberately skipped -
+# there is no new digest to soak - yet the log still printed `released unknown, age unknownd`, which
+# reads exactly like a failing API call. Only the log consumes this; no decision depends on it.
+AGE_CHECKED=false
 
 if [ "$FORCE_ADOPT" = "true" ]; then
     DECISION="adopt (forced)"
@@ -641,6 +697,7 @@ else
     # Falling back to the field this change exists to distrust, in the exact case where the
     # trustworthy source is unavailable, defeats the change - better to stop and be told.
     REL_RC=0
+    AGE_CHECKED=true
     CAND_PUBLISHED="$(release_published_at "$CAND_VER")" || REL_RC=$?
     if [ "$REL_RC" = 2 ]; then
         UP_BUILD="$UP_PUBLISHED"
@@ -663,9 +720,22 @@ else
     fi
 fi
 
+# The age clause reports which of three things happened, because they mean different things and the
+# reader cannot tell them apart from an empty CAND_AGE. Printing `age unknownd` for all three - a
+# literal string where a number belongs - is what made a skipped lookup look like a broken one.
+if [ -n "$CAND_AGE" ]; then
+    AGE_CLAUSE="released ${CAND_PUBLISHED}, age ${CAND_AGE}d"
+elif [ "$AGE_CHECKED" = "true" ]; then
+    # Never silent: this branch always coincides with a FAIL_REASON below, which names which of the
+    # two failure modes (no matching release / API unreachable) actually occurred.
+    AGE_CLAUSE="age lookup failed"
+else
+    AGE_CLAUSE="age not checked"
+fi
+
 # A hold must never be silent: nothing bounds it automatically, so this line is how a persistent
 # hold becomes visible. Built once because both the success and the failure path print it.
-UPSTREAM_LOG="upstream: candidate=${UP_CANDIDATE} (${CAND_VER:-unknown}, released ${CAND_PUBLISHED:-unknown}, age ${CAND_AGE:-unknown}d) published=${UP_PUBLISHED:-none} (${PUB_VER:-unknown}) -> ${DECISION}"
+UPSTREAM_LOG="upstream: candidate=${UP_CANDIDATE} (${CAND_VER:-unknown}, ${AGE_CLAUSE}) published=${UP_PUBLISHED:-none} (${PUB_VER:-unknown}) -> ${DECISION}"
 
 # A2 is accepted risk, so there is no issue-notification channel: a red run is the only signal that
 # reaches anyone, and GitHub emails on workflow failure by default. The job is idempotent and runs
@@ -677,6 +747,32 @@ if [ -n "$FAIL_REASON" ]; then
     echo "::notice::${UPSTREAM_LOG}"
     echo "::error::${FAIL_REASON}"
     exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Upstream tag drift
+#
+# Runs ONLY on `adopt (unchanged)`. That is the one decision that is both silent and open-ended:
+# every other path either takes a new digest (drift is moot - we just moved) or holds loudly with a
+# red run that already has somebody's attention. The steady state is where a stale `:latest` hides.
+#
+# This never fails the job and never holds, on any path, which is the whole reason it is allowed to
+# exist: per the header, a red run is reserved for "I could not make this decision safely" and is
+# never spent on a condition with a safe fallback. Drift changes no decision - what we build is
+# still whatever `:latest` resolves to - so it gets a warning and nothing more. Adopting a release
+# upstream has not promoted stays a deliberate `adopt` dispatch.
+#
+# Cost is one request, on no-op runs only.
+# ---------------------------------------------------------------------------
+if [ "$DECISION" = "adopt (unchanged)" ] && version_ok "$CAND_VER"; then
+    DRIFT_VER="$(latest_stable_version 2>/dev/null || true)"
+    # version_newer, not a date comparison: upstream's maintenance lines publish out of version
+    # order - v2026.6.34 landed 2026-08-08, AFTER v2026.7.1-2 on 2026-08-04 - so "newest by date"
+    # would warn every day that we are behind a backport we deliberately outrank. Ranking by
+    # version makes that case correctly silent.
+    if [ -n "$DRIFT_VER" ] && version_newer "$DRIFT_VER" "$CAND_VER"; then
+        echo "::warning::${RELEASES_REPO} has released ${DRIFT_VER}, but ${UPSTREAM} still resolves to ${CAND_VER} (${UP_CANDIDATE}) - upstream has not moved the tag. Dispatch with adopt=true to take it early."
+    fi
 fi
 
 HASH="$(printf '%s\n%s\n%s\n' "$UP_BUILD" "$REPO_INPUTS" "$APT_EPOCH" | sha256sum | cut -c1-16)"
