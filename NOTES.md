@@ -348,7 +348,11 @@ keeping:
 
 - **It warns; it never holds and never fails the job.** Drift changes no decision — the build still
   consumes whatever `:latest` resolves to — and a red run is never spent on a condition with a safe
-  fallback. Taking an unpromoted release stays a deliberate `adopt` dispatch.
+  fallback. **Note that `adopt` does not reach it either**: `FORCE_ADOPT` bypasses the age gate, but
+  `UP_CANDIDATE` is always whatever `:latest` resolves to, so an unpromoted release is never a
+  candidate in the first place. The warning is genuinely informational — the drift clears itself
+  when upstream promotes the tag (the release is by then well past the cooldown, so the next
+  scheduled run adopts it with no intervention). Taking it sooner means repointing `UPSTREAM`.
 - **Ranked by `version_newer`, not by date.** Upstream's maintenance lines publish out of version
   order: v2026.6.34 landed 2026-08-08, *after* v2026.7.1-2 on 2026-08-04. "Newest by date" would
   warn every day about a backport we deliberately outrank; ranking by version makes that silent.

@@ -771,7 +771,7 @@ if [ "$DECISION" = "adopt (unchanged)" ] && version_ok "$CAND_VER"; then
     # would warn every day that we are behind a backport we deliberately outrank. Ranking by
     # version makes that case correctly silent.
     if [ -n "$DRIFT_VER" ] && version_newer "$DRIFT_VER" "$CAND_VER"; then
-        echo "::warning::${RELEASES_REPO} has released ${DRIFT_VER}, but ${UPSTREAM} still resolves to ${CAND_VER} (${UP_CANDIDATE}) - upstream has not moved the tag. Dispatch with adopt=true to take it early."
+        echo "::warning::${RELEASES_REPO} has released ${DRIFT_VER}, but ${UPSTREAM} still resolves to ${CAND_VER} (${UP_CANDIDATE}) - upstream has not moved the tag. This adopts itself once upstream promotes it; there is no dispatch that reaches ${DRIFT_VER}, because the candidate is always whatever ${UPSTREAM} resolves to. Taking it sooner means repointing UPSTREAM in build.yml."
     fi
 fi
 
