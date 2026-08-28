@@ -474,6 +474,50 @@ their base must replace the startup banner so it doesn't misrepresent LinuxServe
 `root/etc/s6-overlay/s6-rc.d/init-adduser/branding` with its own banner (clearly marked unofficial /
 not affiliated) and sets `ENV LSIO_FIRST_PARTY=false` so the base init does not overwrite it.
 
+### Companion CLIs and the PATH split
+
+This image repackages upstream's `/app` onto the LinuxServer base, so it inherits the runtime but
+none of upstream's PATH conveniences.
+
+**There is no `openclaw` wrapper.** The Dockerfile copies `/app`, `node` and `node_modules`, but no
+bin shim, and `svc-openclaw` invokes the gateway as `node openclaw.mjs` from `/app`. Upstream
+instructions of the form `openclaw <cmd>` therefore become:
+
+```
+docker exec -u abc -w /app <container> node openclaw.mjs <cmd>
+```
+
+`-w /app` is required (the module path is relative, which is why the service does `cd /app`), and
+interactive subcommands additionally need `-it`.
+
+**Neither bin directory is sufficient on its own:**
+
+| Directory | On PATH | Survives rebuild |
+|---|---|---|
+| `/config/.local/bin` | no | yes (persistent volume) |
+| `/usr/local/bin` | yes | no (image layer) |
+
+`tools.exec.pathPrepend` lists `/config/.local/bin`, but that shapes the environment OpenClaw builds
+for **tool execution only** — not the gateway's own process, so a binary there stays invisible to
+provider detection. Installing to `/usr/local/bin` instead puts it on PATH but makes it image state,
+and the next `:latest` pull deletes it silently, leaving the `/config` data directory behind as the
+only clue.
+
+Bridge the two with a `/custom-cont-init.d` script that symlinks `/config/.local/bin/*` into
+`/usr/local/bin` at every start, skipping any destination that already exists as a real file (`node`,
+`npm`, `npx`, `openclaw-resolve-bind`) or as a symlink pointing outside the source directory. Install
+companion CLIs with `npm install -g --prefix /config/.local` so they land on the volume. A CLI's own
+`$HOME`-relative state then persists for the same reason `~/.openclaw` does (see `HOME=/config`
+above); run `docker exec` as `abc`, not root, or its state lands root-owned and the gateway cannot
+read it.
+
+LinuxServer scans only the fixed `/custom-cont-init.d` — nothing dropped in `/config` is ever
+executed — and requires that directory and its contents to be **owned by root** and executable, or it
+refuses to run them. Mount it from a path outside `/config`, read-only. Nesting the source inside the
+`/config` mount to keep a single appdata folder does work, but defeats the `:ro`: the container still
+reaches the same files read-write via `/config`, leaving a root-executed boot script in storage owned
+by `abc` — the user OpenClaw runs tools as.
+
 ## Open upstream issues to track
 
 - [openclaw#41881](https://github.com/openclaw/openclaw/issues/41881) — multi-arch (arm64/armv7) builds.
