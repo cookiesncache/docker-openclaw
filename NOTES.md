@@ -250,6 +250,23 @@ is nowhere to keep one — a hold publishes nothing, so no annotation records it
 (the Actions cache, a repo variable) either add their own failure mode or need permissions this
 workflow will not take.
 
+**The age lookup is lazy, and the log now says so.** `release_published_at` is called only on the
+branch that actually has a soak decision to make. The `adopt (unchanged)` short-circuit fires first
+whenever the candidate digest equals the published one — the normal state between upstream releases
+— and on that path there is no new artifact to age, so no request is made. `CAND_AGE` and
+`CAND_PUBLISHED` therefore stay empty, which is correct and not a failure.
+
+This was originally reported as a broken lookup, and the log line was why: it rendered the empty
+values through `${…:-unknown}` and printed `released unknown, age unknownd` — a literal string where
+a number belongs — which is indistinguishable from a failing API call. Three consecutive green runs
+were investigated on that basis before the lookup was confirmed healthy (`v2026.7.1-1` returns
+**200** anonymously with `published_at: 2026-08-04T00:41:25Z`). The clause now reports which of the
+three things happened: `released <ts>, age <n>d` when the lookup resolved, `age lookup failed` when
+it ran and did not (always alongside the `FAIL_REASON` naming which failure it was), and `age not
+checked` when it was never attempted. `unknown` was never reachable by the numeric comparison —
+`age_days` returns a decimal string or empty, and the `-lt` is guarded by a `-z` test — so this was
+only ever a reporting defect, but it cost a real investigation.
+
 ### Adopting early when an advisory says to
 
 The cooldown must not delay a disclosed vulnerability fix, and must not depend on anyone noticing
@@ -303,6 +320,43 @@ a human gets an email too. The pipeline must not depend on it.
 
 **Fallback** if the copied native module ever fails to load: rebuild from source on the base image, or
 `npm rebuild` the offending module against the installed Node.
+
+### Upstream tag drift
+
+`:latest` moving is upstream's decision, and watching it means the gate cannot, from the digest
+alone, distinguish *"upstream has published nothing new"* from *"upstream published something new
+and did not move the tag"*. Both present as a matching fingerprint and a silent green run.
+
+The second case is not hypothetical. Measured 2026-08-27:
+
+| tag | digest |
+| --- | --- |
+| `latest` | `sha256:2f5ce88…` |
+| `2026.7.1-1` | `sha256:2f5ce88…` |
+| `2026.7.1-2` | `sha256:8789721d…` |
+| `2026.6.34` | `sha256:47d342ba…` |
+
+`2026.7.1-2` is a **distinct image**, published 2026-08-04, and `:latest` has never moved to it — so
+this image sat on `2026.7.1-1` for 23 days with nothing in the logs suggesting anything else was
+available. It is a non-security fix (npm plugin singleton-array metadata, upstream #108336) and no
+published advisory reaches what we ship — the newest cap at `<= 2026.6.6` — so nothing was at risk.
+The invisibility was the defect, not the delay.
+
+`latest_stable_version` therefore reads the releases feed on `adopt (unchanged)` runs only and warns
+when a higher non-prerelease release exists than the one `:latest` resolves to. Specifics worth
+keeping:
+
+- **It warns; it never holds and never fails the job.** Drift changes no decision — the build still
+  consumes whatever `:latest` resolves to — and a red run is never spent on a condition with a safe
+  fallback. Taking an unpromoted release stays a deliberate `adopt` dispatch.
+- **Ranked by `version_newer`, not by date.** Upstream's maintenance lines publish out of version
+  order: v2026.6.34 landed 2026-08-08, *after* v2026.7.1-2 on 2026-08-04. "Newest by date" would
+  warn every day about a backport we deliberately outrank; ranking by version makes that silent.
+- **Prereleases and drafts are dropped.** Upstream ships betas continuously (2026.8.1-beta.2/.3),
+  and a daily warning about one is exactly the routine noise that makes a signal worthless.
+- **Bounded to one page** (100 releases, roughly a year at upstream's cadence). This only reports,
+  and a drift that falls off that window is not one a warning was going to rescue.
+- It costs one request, on no-op runs only, and self-clears the moment upstream promotes the tag.
 
 ### Scheduled-workflow expiry (accepted risk, no machinery)
 
