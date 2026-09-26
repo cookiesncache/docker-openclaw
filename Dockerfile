@@ -14,7 +14,7 @@ FROM ${UPSTREAM_REF} AS upstream
 # ---- final: LinuxServer.io base (s6-overlay v3 + PUID/PGID + /config) ----
 # Pinned by digest so the base cannot move under us; Dependabot's docker ecosystem
 # proposes bumps as a one-line PR.
-FROM ghcr.io/linuxserver/baseimage-ubuntu:noble@sha256:c0446e9ec3ba94131fbcd63390a2c2731b39908e14c6e1f2014c93ab65b88d03
+FROM ghcr.io/linuxserver/baseimage-ubuntu:noble@sha256:e3c0ef35fa0beae613f5571236325b147c7fff647da0e7ccd5aa1af7c46ca093
 
 # HOME=/config so OpenClaw's $HOME-relative ~/.openclaw lands on the persistent volume.
 # LSIO_FIRST_PARTY=false: this is a custom/unofficial image on the LSIO base, so the base
