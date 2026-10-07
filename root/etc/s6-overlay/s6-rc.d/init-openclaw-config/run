@@ -45,15 +45,14 @@ if [[ -z "${OPENCLAW_GATEWAY_BIND:-}" && -n "${TAILSCALE_SERVE_PORT:-}" && "${OP
 fi
 
 # Apply security-relevant Control UI / auth config each boot.
-#   OPENCLAW_ALLOW_INSECURE_AUTH         accept auth over plain HTTP. Authoritative WHEN SET;
-#                                        when unset the persisted value is left alone, so an
-#                                        existing plain-HTTP install is not broken by an image
-#                                        update. New installs get `false` from /defaults.
+#   OPENCLAW_ALLOW_INSECURE_AUTH         retired: upstream dropped gateway.controlUi.allowInsecureAuth
+#                                        (a no-op since before 2026.9.6; rejected as an unknown key
+#                                        from 2026.9.8). Ignored, with a warning when set to true.
 #   OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS  comma-separated allowed origins for the Control UI
 #                                        (CSRF/origin protection on a non-loopback bind), e.g.
 #                                        https://openclaw.<tailnet>.ts.net
 #   OPENCLAW_GATEWAY_BIND                inbound bind override (see openclaw-resolve-bind)
-echo "**** applying control-UI/auth config (bind=${OPENCLAW_RESOLVED_BIND}, insecureAuth=${OPENCLAW_ALLOW_INSECURE_AUTH:-unset -> keeping existing}) ****"
+echo "**** applying control-UI/auth config (bind=${OPENCLAW_RESOLVED_BIND}) ****"
 node -e '
   const fs = require("fs"), p = "/config/.openclaw/openclaw.json";
   try {
@@ -66,16 +65,19 @@ node -e '
     // --bind as well; this keeps the file consistent with the running process.
     c.gateway.bind = process.env.OPENCLAW_RESOLVED_BIND || "lan";
 
-    // allowInsecureAuth: env-authoritative WHEN SET, otherwise leave the persisted value.
-    const raw = process.env.OPENCLAW_ALLOW_INSECURE_AUTH;
-    if (raw != null && raw !== "") {
-      ui.allowInsecureAuth = !["false","0","no","off"].includes(raw.toLowerCase());
+    // allowInsecureAuth: retired upstream, and OpenClaw >= 2026.9.8 refuses to start while the
+    // key is present. Earlier images wrote it into every config, so strip it on each boot.
+    delete ui.allowInsecureAuth;
+    const raw = (process.env.OPENCLAW_ALLOW_INSECURE_AUTH || "").toLowerCase();
+    if (raw !== "" && !["false","0","no","off"].includes(raw)) {
+      console.log("**** WARN: OPENCLAW_ALLOW_INSECURE_AUTH is ignored - OpenClaw no longer has this setting. The Control UI pairs only from a secure context: open it via https (Tailscale Serve / reverse proxy) or http://localhost. ****");
     }
 
     // allowedOrigins: set only when provided (comma-separated)
     const origins = (process.env.OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS || "")
       .split(",").map(s => s.trim()).filter(Boolean);
     if (origins.length) ui.allowedOrigins = origins;
+    if (Object.keys(ui).length === 0) delete c.gateway.controlUi;
 
     // auth.rateLimit: seed a sane default if unset; never override a user-set value
     if (auth.rateLimit == null) {
@@ -83,12 +85,6 @@ node -e '
     }
 
     fs.writeFileSync(p, JSON.stringify(c));
-
-    // Name the symptom, not the mechanism: fail-closed is only correct if the resulting
-    // error is findable by someone who just lost their dashboard.
-    if (ui.allowInsecureAuth === false) {
-      console.log("**** control-UI: insecure auth is OFF (bind=" + c.gateway.bind + "). If pairing fails on a plain http:// address, put TLS in front (Tailscale Serve / reverse proxy) or set OPENCLAW_ALLOW_INSECURE_AUTH=true ****");
-    }
   } catch (e) { console.log("WARN: could not patch openclaw.json: " + e.message); }
 '
 

@@ -21,7 +21,7 @@ This image adopts the LinuxServer permission model: a fixed internal user is rem
 
 - **`PUID`/`PGID`/`UMASK`** ownership handling — no manual `chown`
 - **s6-overlay** init and supervision
-- **Fail-closed defaults** — insecure auth off, allowed-origins control, a seeded auth rate limit,
+- **Fail-closed defaults** — device pairing over a secure context only, allowed-origins control, a seeded auth rate limit,
   and a bind that follows your access method
 - **Docker Mods, custom scripts/services, and `FILE__` secrets** — inherited from the LinuxServer base
 - Config, state and workspace persist under **`/config`**
@@ -48,9 +48,6 @@ services:
       - TZ=Etc/UTC
       - OPENCLAW_GATEWAY_TOKEN=change-me        # openssl rand -hex 24
       - ANTHROPIC_API_KEY=                      # optional
-      # Pairing over plain http://<ip>:18789 with no TLS in front? Set this to true.
-      # See Access below for the recommended setup instead.
-      - OPENCLAW_ALLOW_INSECURE_AUTH=false
     volumes:
       - ./config:/config
     ports:
@@ -71,7 +68,6 @@ A full `docker-compose.yml` (with the optional provider keys) and an `.env.examp
 | `TZ` | — | Timezone, e.g. `America/New_York`. |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token (**required**). Generate: `openssl rand -hex 24`. |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (optional). |
-| `OPENCLAW_ALLOW_INSECURE_AUTH` | `false` | Leave `false`. Set `true` only if you reach the dashboard over plain HTTP with no TLS in front — without it, pairing fails on a plain-HTTP LAN address. |
 | `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` | — | Comma-separated allowed origins for the Control UI (CSRF protection). Set to the URL you reach the UI from. |
 | `OPENCLAW_GATEWAY_BIND` | — | Advanced. Inbound bind **mode** (`auto`/`loopback`/`lan`/`tailnet`/`custom`), not a host address. Empty → `loopback` when Tailscale Serve is enabled, else `lan`. See [Access](#access). |
 
@@ -90,8 +86,13 @@ Additional optional provider keys / bot tokens are also passed through:
 
 The gateway serves **plain HTTP** and does not terminate TLS itself. **Do not expose port `18789`
 directly to the internet.** HTTPS comes from a terminator in front — Tailscale Serve or a reverse
-proxy — and with one in place the gateway sees the connection as secure, so device pairing works
-with `OPENCLAW_ALLOW_INSECURE_AUTH=false`.
+proxy. The Control UI only pairs a device from a secure context — an `https://` URL or
+`http://localhost` — so a plain `http://<lan-ip>:18789` address can load the page but not pair.
+
+> `OPENCLAW_ALLOW_INSECURE_AUTH` is gone: OpenClaw retired the setting behind it, and the image now
+> ignores the variable (with a warning if it is `true`). Upstream's remaining escape hatch is
+> `gateway.controlUi.dangerouslyDisableDeviceAuth` in `openclaw.json`, which turns device auth off
+> entirely — prefer TLS.
 
 ### The secure recipe
 
@@ -101,8 +102,7 @@ with `OPENCLAW_ALLOW_INSECURE_AUTH=false`.
 2. Set **Tailscale Serve** to `Serve`.
 3. Remove the `18789` port mapping.
 
-Leave `OPENCLAW_ALLOW_INSECURE_AUTH=false` (the default). Reach the UI at
-`https://openclaw.<your-tailnet>.ts.net/`.
+Reach the UI at `https://openclaw.<your-tailnet>.ts.net/`.
 
 > **Step 3 is not optional housekeeping.** A published Docker port cannot reach a loopback-bound
 > process — the forward DNATs to `eth0`, not `lo`. So once Tailscale is enabled,
@@ -125,7 +125,7 @@ on those networks rather than relying on the default.
 
 There is no equivalent toggle. Run your own Tailscale sidecar or a reverse proxy, then:
 
-- keep `OPENCLAW_ALLOW_INSECURE_AUTH=false` and open the UI via its `https`/`wss` URL;
+- open the UI via its `https`/`wss` URL;
 - set `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` to that same URL;
 - set `OPENCLAW_GATEWAY_BIND` per the next section — a sidecar sharing the container's network
   namespace can use loopback; a proxy on the docker network needs `lan`.

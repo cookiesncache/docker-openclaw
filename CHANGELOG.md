@@ -7,19 +7,16 @@ bundles; this file records changes to the packaging itself.
 
 ### Changed — action may be required
 
-**`OPENCLAW_ALLOW_INSECURE_AUTH` now defaults to `false` for new installs.**
+**`OPENCLAW_ALLOW_INSECURE_AUTH` is removed.**
 
-Existing installs are **not** affected: the variable is only written to your config when you
-actually set it, so an install that has been running with insecure auth enabled keeps it. Only a
-fresh `/config` picks up the new default.
+OpenClaw retired `gateway.controlUi.allowInsecureAuth`; it already had no effect, and from
+OpenClaw 2026.9.8 the gateway refuses to start while the key is in `openclaw.json`. The container
+now deletes the key from your config on every boot and ignores the variable, printing a warning if
+it is set to `true`. You can drop it from your compose file or template.
 
-Why: the gateway's own startup check calls the old default out —
-`security warning: dangerous config flags enabled: gateway.controlUi.allowInsecureAuth=true`.
-Accepting an auth token over plain HTTP should be something you opt into, not something you inherit.
-
-If pairing fails on a plain `http://` address after a fresh install, either put TLS in front (see
-[Access](README.md#access)) or set `OPENCLAW_ALLOW_INSECURE_AUTH=true`. The container prints exactly
-that hint at boot when insecure auth is off.
+Nothing about pairing changes: the Control UI pairs a device only from a secure context — an
+`https://` URL or `http://localhost`. If you reach it over plain `http://<lan-ip>:18789`, put TLS in
+front (see [Access](README.md#access)).
 
 **The gateway's inbound bind is now conditional.**
 

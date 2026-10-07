@@ -15,7 +15,7 @@
   <Privileged>false</Privileged>
   <Support>https://forums.unraid.net/topic/199671-support-openclaw-linuxserverio-style-openclaw-gateway-unofficial/</Support>
   <Project>https://github.com/cookiesncache/docker-openclaw</Project>
-  <Overview>Unofficial, LinuxServer.io-style Docker image for the OpenClaw AI assistant gateway (upstream: https://github.com/openclaw/openclaw) - not affiliated with OpenClaw or LinuxServer.io. Uses the PUID/PGID + s6-overlay model so /config is owned by your chosen UID/GID with no manual chown; on Unraid keep PUID=99 / PGID=100 to match appdata ownership. Provide a gateway token and (optionally) an Anthropic API key. The Control UI is served on port 18789. The gateway serves plain HTTP and relies on a front TLS terminator (Tailscale serve or a reverse proxy) for HTTPS - do not expose port 18789 directly to the internet. For a hardened setup set OPENCLAW_ALLOW_INSECURE_AUTH=false and OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS to your UI URL, and open the UI via its https URL. amd64 only; image tracks upstream, checked daily and rebuilt only when something changed.</Overview>
+  <Overview>Unofficial, LinuxServer.io-style Docker image for the OpenClaw AI assistant gateway (upstream: https://github.com/openclaw/openclaw) - not affiliated with OpenClaw or LinuxServer.io. Uses the PUID/PGID + s6-overlay model so /config is owned by your chosen UID/GID with no manual chown; on Unraid keep PUID=99 / PGID=100 to match appdata ownership. Provide a gateway token and (optionally) an Anthropic API key. The Control UI is served on port 18789. The gateway serves plain HTTP and relies on a front TLS terminator (Tailscale serve or a reverse proxy) for HTTPS - do not expose port 18789 directly to the internet. Device pairing needs a secure context: open the UI via its https URL and set OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS to that URL. amd64 only; image tracks upstream, checked daily and rebuilt only when something changed.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:18789]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/cookiesncache/docker-openclaw/main/templates/openclaw.xml</TemplateURL>
@@ -30,10 +30,10 @@
 
 **Two behaviour changes.**
 
-1. OPENCLAW_ALLOW_INSECURE_AUTH now defaults to **false** for new installs. Existing installs keep
-whatever they already have - your saved template value is not rewritten, so nothing breaks on update.
-OpenClaw's own startup check flags `true` as a dangerous flag; leave it false unless you reach the
-dashboard over plain HTTP with no TLS in front.
+1. OPENCLAW_ALLOW_INSECURE_AUTH is removed. OpenClaw retired the setting behind it, and newer
+OpenClaw releases refuse to start while it is in the config, so the container now strips it and
+ignores the variable. You can delete it from your template. Pairing still needs a secure context:
+open the dashboard via https (Tailscale Serve / reverse proxy).
 
 2. The gateway's inbound bind is now conditional. With **Use Tailscale + Serve** enabled it binds
 loopback (Serve proxies to it inside the container), otherwise `lan` as before. If you run Tailscale
@@ -62,7 +62,6 @@ stop seeing update prompts for rebuilds that change nothing.
   <Config Name="TZ" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone (e.g. America/New_York)." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
   <Config Name="OPENCLAW_GATEWAY_TOKEN" Target="OPENCLAW_GATEWAY_TOKEN" Default="" Mode="" Description="Auth token for the gateway. Generate one with: openssl rand -hex 24" Type="Variable" Display="always" Required="true" Mask="true"/>
   <Config Name="ANTHROPIC_API_KEY" Target="ANTHROPIC_API_KEY" Default="" Mode="" Description="Anthropic API key (sk-ant-...). Leave blank if configured another way." Type="Variable" Display="always" Required="false" Mask="true"/>
-  <Config Name="OPENCLAW_ALLOW_INSECURE_AUTH" Target="OPENCLAW_ALLOW_INSECURE_AUTH" Default="false" Mode="" Description="Leave false. Set true only if you reach the dashboard over plain HTTP with no TLS in front - without it, pairing will fail on a plain-HTTP LAN address." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS" Target="OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS" Default="" Mode="" Description="Comma-separated allowed origins for the Control UI (CSRF/origin protection on a non-loopback bind). Set to the URL you reach the UI from, e.g. https://openclaw.YOUR-TAILNET.ts.net. Strongly recommended." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="OPENCLAW_GATEWAY_BIND" Target="OPENCLAW_GATEWAY_BIND" Default="" Mode="" Description="Advanced. Which bind MODE the gateway listens on for INBOUND connections: auto, loopback, lan, tailnet or custom. This is a mode name, not a host address; legacy values like 127.0.0.1 or 0.0.0.0 are normalized to loopback / lan for you. Leave empty: the container uses loopback when Tailscale Serve is enabled (Serve runs inside the container and proxies to loopback) and lan otherwise. Set to lan if something else must reach in - a reverse proxy, a dashboard widget, or another container using the OpenAI-compatible endpoints - or if you enable Tailscale but keep the published 18789 port, because a published port cannot reach a loopback-bound process. Does not affect OpenClaw reaching OUT to other containers." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <!-- Optional extra provider keys / bot tokens, preserved from the original OpenClaw template for transparency. All optional, masked, empty by default. -->
