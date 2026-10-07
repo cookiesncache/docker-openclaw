@@ -405,13 +405,13 @@ The only byte-exact reference is the index digest, which needs no tag scheme at 
 `openclaw.json` is seeded on first run from `root/defaults/openclaw.json`. The config oneshot then
 applies security-relevant settings on every boot:
 
-- `controlUi.allowInsecureAuth` ← `OPENCLAW_ALLOW_INSECURE_AUTH`, **authoritative only when the
-  variable is set**. When it is unset the persisted value is left alone; new installs get `false`
-  from `root/defaults/openclaw.json`. This is deliberate: the oneshot runs on every boot, so a plain
-  `??` fallback would have overwritten the config of every existing install that never set the
-  variable — including everyone who copied the README's minimal compose block, which does not set it.
-  Unraid and `docker-compose.yml` users materialize the variable explicitly and are unaffected either
-  way. OpenClaw's own startup check flags `true` as a dangerous flag.
+- `controlUi.allowInsecureAuth` is **deleted** on every boot. Upstream retired the key (its only
+  remaining reference in 2026.9.6 is the doctor migration that removes it, so it was already a
+  no-op), and from 2026.9.8 the startup preflight rejects it as an unknown key instead of migrating
+  it away — so the gateway refuses to start. Earlier images seeded it into every config, hence the
+  unconditional delete rather than a defaults change alone. `OPENCLAW_ALLOW_INSECURE_AUTH` is now
+  ignored, with a boot warning when set truthy; the oneshot does **not** map it to
+  `dangerouslyDisableDeviceAuth`, which is a much larger switch than the setting it replaced.
 - `controlUi.allowedOrigins` ← `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` (comma-separated; unset by
   default). Set to the URL the UI is reached from, for CSRF/origin protection on a non-loopback bind.
 - `auth.rateLimit` is seeded to a sane default (`maxAttempts 10 / windowMs 60000 / lockoutMs 300000`)
