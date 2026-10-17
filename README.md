@@ -202,7 +202,8 @@ shared server.
 
 ## LinuxServer features
 
-Built on the LinuxServer base image, so the standard LinuxServer tooling works out of the box:
+Built on the LinuxServer Ubuntu 26.04 LTS base image (`baseimage-ubuntu:resolute`), so the standard
+LinuxServer tooling works out of the box:
 
 - **Docker Mods** — add packages/tweaks at startup without rebuilding:
   `DOCKER_MODS=linuxserver/mods:universal-…` (pipe-separate multiple mods).
