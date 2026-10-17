@@ -101,6 +101,23 @@ if [ "$db" != 1 ]; then
   exit 1
 fi
 
+# Runtime packages that upstream's image ships and the LSIO base lacks. Nothing at boot touches
+# either, so losing one would otherwise surface only when someone enables the SSH sandbox backend
+# (`spawn ssh ENOENT`) or managed llama.cpp (llama-server cannot load libgomp.so.1).
+# `ssh -V` rather than `command -v ssh`, so the binary has to execute as well as exist.
+ssh_ver="$(docker exec "$NAME" sh -c 'ssh -V 2>&1' || true)"
+if has '^OpenSSH' "$ssh_ver"; then
+  echo "  ssh present: ${ssh_ver}"
+else
+  bad "ssh is missing or broken (openssh-client): '${ssh_ver}'"
+fi
+ld_cache="$(docker exec "$NAME" sh -c 'ldconfig -p' 2>&1 || true)"
+if has 'libgomp\.so\.1' "$ld_cache"; then
+  echo "  libgomp.so.1 is in the linker cache"
+else
+  bad "libgomp.so.1 is not in the linker cache (libgomp1)"
+fi
+
 # ---------------------------------------------------------------------------
 # Container 2: the Tailscale path, which is the whole reason the resolver exists
 # ---------------------------------------------------------------------------

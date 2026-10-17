@@ -38,6 +38,12 @@ ENV HOME="/config" \
 # It MUST be passed identically to BOTH build sites in build.yml - the smoke build and the
 # build-push-action - or the image that gets smoke-tested is not the image that gets pushed.
 # Both read a single value computed once by the gate step.
+#
+# The package list mirrors upstream's runtime stage, minus tini (s6-overlay's /init is PID 1).
+# Neither of these is in the LSIO base:
+#   libgomp1       - OpenMP runtime; the managed llama.cpp server links libgomp.so.1 and fails
+#                    its `llama-server --version` preflight without it.
+#   openssh-client - the SSH sandbox backend spawns `ssh` directly; git's SSH remotes need it too.
 ARG APT_EPOCH
 RUN \
   echo "**** install runtime packages (apt epoch: ${APT_EPOCH:-unset}) ****" && \
@@ -47,7 +53,9 @@ RUN \
     curl \
     git \
     hostname \
+    libgomp1 \
     lsof \
+    openssh-client \
     openssl \
     procps \
     python3 && \
