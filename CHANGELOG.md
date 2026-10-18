@@ -106,6 +106,10 @@ listening on loopback only. That path previously had no coverage, which is how t
 ### Added
 
 - `OPENCLAW_GATEWAY_BIND` — advanced, empty by default. See the table above.
+- `libgomp1` and `openssh-client`, matching upstream's runtime packages. Managed llama.cpp local
+  models need `libgomp1` (the `llama-server` build links OpenMP), and the SSH sandbox backend
+  (`agents.defaults.sandbox.backend: "ssh"`) runs `ssh` directly, so it used to fail with
+  `spawn ssh ENOENT` here. Git remotes over SSH now work too.
 - `/licenses/NODEJS_LICENSE` in the image: Node.js's full license including its bundled components.
 - `io.cookiesncache.openclaw.upstream.ref` label — ask any image exactly what it was built from:
   ```bash

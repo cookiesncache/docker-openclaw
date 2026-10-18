@@ -204,8 +204,9 @@ and publishes immediately, built against the previously published upstream diges
 
 Package refreshes and upstream releases are different artifacts and now use different mechanisms.
 The LSIO base is pinned by digest, so *its* layers cannot move on their own — base updates arrive
-only as Dependabot digest bumps. But the Dockerfile also installs eight packages from the Ubuntu
-archive (`ca-certificates curl git hostname lsof openssl procps python3`), and those go stale
+only as Dependabot digest bumps. But the Dockerfile also installs ten packages from the Ubuntu
+archive (`ca-certificates curl git hostname libgomp1 lsof openssh-client openssl procps python3` —
+upstream's runtime list minus `tini`, since s6-overlay's `/init` is PID 1), and those go stale
 between rebuilds. With the fingerprint gate doing its job, an image could otherwise sit unrebuilt
 for months while CVEs accumulated against them.
 
@@ -229,7 +230,7 @@ This replaced a `day -eq 1` `FORCE_PUBLISH`, which was wrong three ways:
 
 Two consequences worth expecting. A genuine publish early in a new month also refreshes packages,
 which is a feature — the publish was happening anyway — but the layer churn is not a cache
-regression. And a month in which Ubuntu shipped nothing for these eight packages still produces a
+regression. And a month in which Ubuntu shipped nothing for these ten packages still produces a
 new digest, because re-running apt is never byte-identical (dpkg mtimes, `ld.so.cache`). Twelve
 such updates a year is already accepted by the tagging policy below.
 
