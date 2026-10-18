@@ -1,13 +1,23 @@
 name: dependabot-auto-merge
 
-# pull_request_target runs in the BASE repository context with write permissions.
+# Every job here runs in the BASE repository context with write permissions: auto-merge and
+# restart-soak on pull_request_target, release-soaked on schedule and workflow_dispatch.
 #
 # There is deliberately no actions/checkout here, and no build step. Checking out and
 # executing pull-request code in this context is a known privilege-escalation pattern,
 # and this repository publishes container images that other people install. API calls
-# only. The PR's code is validated by ci.yml, which runs in the untrusted PR context
-# with a read-only token, and is a required status check on main.
-on: pull_request_target
+# only, plus one anonymous registry lookup in release-soaked; the PR's diff is read there
+# as data and never executed. The PR's code is validated by ci.yml, which runs in the
+# untrusted PR context with a read-only token, and is a required status check on main.
+on:
+  pull_request_target:
+  # Dependabot's weekly docker run has opened its PRs on Saturdays at about 12:22 UTC
+  # (observed, not configured). 13:30 daily picks a PR up about an hour after its soak
+  # ends, and a day later if a run is late or dropped, which GitHub does with schedules.
+  # Scheduled workflows also stop after 60 days without repository activity (NOTES.md).
+  schedule:
+    - cron: '30 13 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,7 +25,7 @@ permissions:
 
 jobs:
   auto-merge:
-    if: github.actor == 'dependabot[bot]'
+    if: github.event_name == 'pull_request_target' && github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Fetch Dependabot metadata
@@ -41,33 +51,181 @@ jobs:
 
       # Two things auto-merge, both gated by the required pr-smoke check:
       #
-      #   1. Security updates (non-empty ghsa-id). Cooldown does not apply to these, so
-      #      they arrive as soon as the advisory does. In practice this only ever fires
-      #      for github-actions: Docker is not a GitHub Advisory Database ecosystem, so a
-      #      base-image bump never carries a GHSA.
-      #   2. Docker ecosystem updates - the base image digest pin. The diff is exactly one
-      #      pinned line and pr-smoke boots the resulting image, so holding these for
-      #      manual review only delays base security patches without adding real scrutiny.
+      #   1. Security updates (non-empty ghsa-id), here and at once. Cooldown does not apply
+      #      to these, so they arrive as soon as the advisory does. In practice this only ever
+      #      fires for github-actions: Docker is not a GitHub Advisory Database ecosystem, so
+      #      a base-image bump never carries a GHSA.
+      #   2. Docker ecosystem updates - the base image digest pin - but NOT from this job.
+      #      They are held for a soak and released by release-soaked, below, which says why.
       #
-      # The docker condition is deliberate, and its limits are worth stating rather than
-      # rediscovering:
-      #   - The evidence base for cooldown as a control is npm-derived. Docker is not a GitHub
-      #     Advisory Database ecosystem, so none of it transfers cleanly.
-      #   - "Caught during the cooldown" has to mean REMOVED AT THE REGISTRY, not merely
-      #     detected or reported. A malicious digest that is still pullable when the window
-      #     expires is auto-merged exactly as if nothing had happened.
-      #   - Cooldown does nothing at all against a dormant backdoor, maintainer sabotage, or a
-      #     compromised build system: each of those ships a payload that is not yet, or never,
-      #     publicly known to be bad.
-      # What actually carries the weight here is the digest pin plus pr-smoke booting the image.
+      # Everything else is a routine update and waits for a human.
       - name: Enable auto-merge
-        if: steps.meta.outputs.ghsa-id != '' || steps.meta.outputs.package-ecosystem == 'docker'
+        if: steps.meta.outputs.ghsa-id != ''
         run: |
-          echo "::notice::auto-merging ${{ steps.meta.outputs.dependency-names }} (ecosystem=${{ steps.meta.outputs.package-ecosystem }}, ghsa=${{ steps.meta.outputs.ghsa-id || 'none' }})"
+          echo "::notice::auto-merging ${{ steps.meta.outputs.dependency-names }} (ecosystem=${{ steps.meta.outputs.package-ecosystem }}, ghsa=${{ steps.meta.outputs.ghsa-id }})"
           gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Hold docker updates for the soak
+        if: steps.meta.outputs.ghsa-id == '' && steps.meta.outputs.package-ecosystem == 'docker'
+        env:
+          NAMES: ${{ steps.meta.outputs.dependency-names }}
+        run: echo "::notice::${NAMES} is a docker update - held; release-soaked enables auto-merge once its commit has soaked."
+
       - name: Leave routine updates for review
         if: steps.meta.outputs.ghsa-id == '' && steps.meta.outputs.package-ecosystem != 'docker'
         run: echo "::notice::${{ steps.meta.outputs.dependency-names }} is a routine ${{ steps.meta.outputs.package-ecosystem }} update - not auto-merging."
+
+  # A new commit restarts the soak, so auto-merge enabled on an earlier commit - by
+  # release-soaked, or by this workflow before the soak existed (#29) - comes off again.
+  # GitHub only turns auto-merge off itself when someone WITHOUT write access pushes, so
+  # without this, `@dependabot rebase` on a red base-bump PR, which is the usual fix, would
+  # keep the old enablement and could merge a freshly resolved digest minutes after it landed.
+  #
+  # Its own job, keyed only on event facts, so it runs whoever pushed and does not depend on
+  # fetch-metadata (whose PAT can expire). Turning auto-merge off is the safe direction, which
+  # is why trusting the branch name here is fine; nothing here can turn it on.
+  restart-soak:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      startsWith(github.head_ref, 'dependabot/docker/') &&
+      github.event.pull_request.auto_merge != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disable auto-merge until the new commit has soaked
+        run: |
+          echo "::notice::new commit on a docker PR - disabling auto-merge until it has soaked"
+          gh pr merge --disable-auto "${{ github.event.pull_request.html_url }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Releases docker PRs - the LSIO base digest pin - once they have soaked.
+  #
+  # Why they are auto-merged at all: the diff is exactly one line, swapping the digest on the
+  # base FROM (checked below, not assumed), and pr-smoke boots the resulting image, so holding
+  # them for manual review only delays base security patches without adding real scrutiny.
+  #
+  # Why this soak exists when dependabot.yml sets a docker cooldown: that cooldown never runs.
+  # Every Dependabot docker run logs "No verified registry publication date source for ghcr.io;
+  # skipping cooldown" (latest checked: 2026-10-17), and base-bump PRs #23-#25, #28 and #29 all
+  # carry a "Cooldown could not be applied" banner. Until this job, base bumps auto-merged within
+  # minutes of Dependabot opening them, gated only by pr-smoke. The digests were about 3.4 days
+  # old by then, but only by coincidence of schedules - LSIO publishes noble on Wednesdays near
+  # 02:00 UTC, Dependabot runs on Saturdays near 12:22 - so an off-cycle release the day before
+  # a run would have merged about a day old. The soak makes it at least SOAK_DAYS by construction,
+  # about 6.5 days on the regular cycle. If the banner ever disappears the two delays stack;
+  # drop one.
+  #
+  # The clock is the PR's head commit: Dependabot writes it after resolving the digest, so its
+  # age can only UNDER-state the digest's. Any rebase or recreate writes a new commit and starts
+  # over. It is deliberately not the LSIO release date: mapping a digest to its release means
+  # trusting the image's own version label, which a compromised build writes (gate.sh makes the
+  # same argument about `created`).
+  #
+  # What the soak buys, stated narrowly:
+  #   - "Caught during the soak" has to mean REMOVED AT THE REGISTRY. The digest is looked up
+  #     when the soak ends, so one that is gone by then is held, not merged. One that is still
+  #     pullable is merged exactly as if nothing had happened.
+  #   - The evidence base for delay as a control is npm-derived. Docker is not a GitHub
+  #     Advisory Database ecosystem, so none of it transfers cleanly.
+  #   - It does nothing at all against a dormant backdoor, maintainer sabotage, or a
+  #     compromised build system: each of those ships a payload that is not yet, or never,
+  #     publicly known to be bad.
+  #   - It gives a human SOAK_DAYS to close a PR they distrust.
+  # What actually carries the weight is still the digest pin plus pr-smoke booting the image.
+  #
+  # SOAK_DAYS plus up to a day of schedule lag must stay under 7 days. While a PR soaks it stays
+  # open, and Dependabot keys docker PRs by TAG, so its weekly run opens nothing new for the base
+  # until this one merges; soak past the next run and alternate weeks are lost. 7 days is also
+  # LSIO's regular release interval - noble ls64..ls89, measured 2026-10-18: median 7.0, regular
+  # 6.9-7.1, off-cycle gaps of 3.4 and 5.2; resolute ls1..ls29, measured 2026-10-17: median 7.0,
+  # regular minimum about 6.2 - which matters if Dependabot ever starts moving open docker PRs to
+  # each new digest: then every weekly run restarts the clock, and a soak that cannot finish
+  # inside one week freezes the pin. (Today it logs "Pull request #29 already exists ... with
+  # latest version noble" and leaves the PR alone.) 3, plus a day of lag, is comfortably under.
+  release-soaked:
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    # A dispatch overlapping the cron would otherwise race it to the same PR.
+    concurrency: release-soaked
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      SOAK_DAYS: 3
+      BASE_IMAGE: linuxserver/baseimage-ubuntu
+    steps:
+      - name: Enable auto-merge on soaked docker PRs
+        run: |
+          set -euo pipefail
+          now="$(date -u +%s)"
+          failed=0
+          # A PR that does not qualify waits for a human (warning). One that should qualify but
+          # cannot be checked fails the run (error), so the hold is visible.
+          warn() { echo "::warning::$*"; }
+          err() { echo "::error::$*"; failed=1; }
+
+          prs="$(gh pr list --author 'app/dependabot' --state open --base main --limit 100 \
+                   --json number,headRefName,headRefOid,isCrossRepository,autoMergeRequest \
+                   --jq '.[] | [.number, .headRefName, .headRefOid, .isCrossRepository, (.autoMergeRequest != null)] | @tsv')"
+
+          # The list is read on fd 3 so that nothing in the loop body can swallow it from stdin.
+          while IFS=$'\t' read -r -u 3 num head_ref head_sha cross auto; do
+            [[ "$head_ref" == dependabot/docker/* ]] || continue
+            pr="#${num}"
+            if [[ "$auto" == true ]]; then echo "${pr}: auto-merge already enabled"; continue; fi
+            if [[ "$cross" != false ]]; then warn "${pr}: head is in another repository - left for review"; continue; fi
+
+            # The checks fetch-metadata makes for the auto-merge job, which cannot run here (it
+            # reads the pull_request event payload, and a scheduled run has none): the commit is
+            # Dependabot's and its signature verified. Exactly one, so anything pushed on top is
+            # someone else's change and goes to review.
+            meta="$(gh api "repos/${GH_REPO}/pulls/${num}/commits" \
+                      --jq '[length, .[0].sha, (.[0].author.login // "-"), .[0].commit.verification.verified, .[0].commit.committer.date] | @tsv')" \
+              || { err "${pr}: could not read its commits"; continue; }
+            IFS=$'\t' read -r n_commits c_sha c_author c_verified c_date <<< "$meta"
+            if [[ "$n_commits" != 1 || "$c_author" != 'dependabot[bot]' || "$c_verified" != true ]]; then
+              warn "${pr}: not a single verified Dependabot commit (commits=${n_commits}, author=${c_author}, verified=${c_verified}) - left for review"
+              continue
+            fi
+            if [[ "$c_sha" != "$head_sha" ]]; then echo "${pr}: head moved while being checked - next run"; continue; fi
+            [[ "$c_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+              || { err "${pr}: unreadable commit date '${c_date}'"; continue; }
+            age=$(( now - $(date -u -d "$c_date" +%s) ))
+            if (( age < SOAK_DAYS * 86400 )); then
+              echo "${pr}: soaking, $(( age / 3600 ))h of $(( SOAK_DAYS * 24 ))h"
+              continue
+            fi
+
+            patch="$(gh api "repos/${GH_REPO}/pulls/${num}/files" \
+                       --jq 'if length == 1 and .[0].filename == "Dockerfile" and .[0].additions == 1 and .[0].deletions == 1 then .[0].patch else "" end')" \
+              || { err "${pr}: could not read its diff"; continue; }
+            # The removed and added lines must both be the base FROM, on the same tag.
+            old_tag="$(sed -nE "s|^-FROM ghcr\.io/${BASE_IMAGE}:([A-Za-z0-9._-]+)@sha256:[0-9a-f]{64}\$|\1|p" <<< "$patch")"
+            new="$(sed -nE "s|^\+FROM ghcr\.io/${BASE_IMAGE}:([A-Za-z0-9._-]+)@(sha256:[0-9a-f]{64})\$|\1 \2|p" <<< "$patch")"
+            new_tag="${new%% *}" digest="${new#* }"
+            if [[ -z "$old_tag" || "$new_tag" != "$old_tag" || ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              warn "${pr}: diff is not a one-line ${BASE_IMAGE} digest bump - left for review"
+              continue
+            fi
+
+            # Anonymous pull token, then a manifest HEAD. Measured 2026-10-18: 200 for a
+            # published digest, 404 for an absent one, 401 without the token.
+            token="$(curl -fsS "https://ghcr.io/token?scope=repository:${BASE_IMAGE}:pull&service=ghcr.io" | jq -r '.token // empty')" || token=''
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -I \
+                      -H "Authorization: Bearer ${token}" \
+                      -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
+                      "https://ghcr.io/v2/${BASE_IMAGE}/manifests/${digest}")" || code=000
+            if [[ "$code" != 200 ]]; then
+              err "${pr}: ${BASE_IMAGE}@${digest} answered HTTP ${code} at ghcr.io - not releasing"
+              continue
+            fi
+
+            # --match-head-commit makes GitHub refuse to enable or merge if the head moved after
+            # the checks above. A commit pushed after enabling is restart-soak's job.
+            echo "::notice::${pr}: soaked $(( age / 3600 ))h and ${digest} is still published - enabling auto-merge"
+            gh pr merge --auto --squash --match-head-commit "$head_sha" "https://github.com/${GH_REPO}/pull/${num}" \
+              || err "${pr}: gh pr merge failed"
+          done 3<<< "$prs"
+
+          exit "$failed"
