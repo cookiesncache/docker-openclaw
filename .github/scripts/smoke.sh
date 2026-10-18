@@ -75,10 +75,11 @@ wait_healthy() {
 echo "== default container =="
 wait_healthy "$NAME"
 
-# The native state-DB module only opens on gateway start; `openclaw.mjs --version` loads the
-# module graph but never exercises it. A SQLite file here means the native module loaded
-# successfully against the Node runtime copied from the upstream stage - which is the thing most
-# likely to break when upstream changes its base image or Node major.
+# The state DB only opens on gateway start; `openclaw.mjs --version` loads the module graph but
+# never exercises it. Upstream now uses Node's built-in `node:sqlite` rather than a native addon,
+# so a SQLite file here proves the state layer works on the Node runtime copied from the upstream
+# stage - which is the thing most likely to break when upstream changes its Node major or its
+# storage backend.
 #
 # Polled separately from /healthz: the gateway answers healthz within a few seconds, but the
 # state database is opened asynchronously and lands slightly later.
@@ -95,7 +96,7 @@ for i in $(seq 1 60); do
   sleep 1
 done
 if [ "$db" != 1 ]; then
-  echo "::error::state DB never appeared - the native state module likely failed to load"
+  echo "::error::state DB never appeared - node:sqlite likely failed to open it (see the log below)"
   docker exec "$NAME" sh -c 'ls -la /config/.openclaw/state/' || true
   docker logs "$NAME"
   exit 1

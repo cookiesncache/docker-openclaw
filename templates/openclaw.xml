@@ -28,14 +28,21 @@
   <Changes>
 ### Unreleased
 
-**Two behaviour changes.**
+**Three behaviour changes.**
 
-1. OPENCLAW_ALLOW_INSECURE_AUTH is removed. OpenClaw retired the setting behind it, and newer
+1. The base image is now Ubuntu 26.04 LTS (was 24.04). OpenClaw itself is unchanged. **If you
+created a Python virtualenv under /config, recreate it:** python3 is now 3.14 (was 3.12), and
+scripts importing modules removed in Python 3.13 (cgi, crypt, telnetlib, ...) stop working. Also
+newer: git 2.53, the openssl command 3.5, curl 8.18. Most coreutils (mkdir, chown, chmod, ln, date,
+...) are now the Rust rewrite, uutils; the GNU versions remain available as gnudate, gnuls, etc. To
+roll back, pin the last -ls tag published before this change (2026.9.8-ls79 at the time of writing).
+
+2. OPENCLAW_ALLOW_INSECURE_AUTH is removed. OpenClaw retired the setting behind it, and newer
 OpenClaw releases refuse to start while it is in the config, so the container now strips it and
 ignores the variable. You can delete it from your template. Pairing still needs a secure context:
 open the dashboard via https (Tailscale Serve / reverse proxy).
 
-2. The gateway's inbound bind is now conditional. With **Use Tailscale + Serve** enabled it binds
+3. The gateway's inbound bind is now conditional. With **Use Tailscale + Serve** enabled it binds
 loopback (Serve proxies to it inside the container), otherwise `lan` as before. If you run Tailscale
 **and** a published 18789 port, or something on the docker network reaches into the gateway, set the
 new advanced variable **OPENCLAW_GATEWAY_BIND=lan** to restore the old behaviour.
@@ -44,7 +51,7 @@ Note that a published Docker port can never reach a loopback-bound process, so w
 enabled `http://YOUR-UNRAID-IP:18789` stops working unless you set OPENCLAW_GATEWAY_BIND=lan. The
 container prints a notice at startup explaining this.
 
-3. **Bugfix:** the Tailscale path previously wrote the literal address `127.0.0.1` into
+4. **Bugfix:** the Tailscale path previously wrote the literal address `127.0.0.1` into
 `gateway.bind`, but OpenClaw expects a bind *mode* there (auto / loopback / lan / tailnet / custom)
 and documents host aliases as unsupported. It now writes `loopback`. If you set
 OPENCLAW_GATEWAY_BIND to a host address yourself, it is normalized to the matching mode and the

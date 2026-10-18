@@ -35,13 +35,51 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
+      # Which upstream to build against: the digest the PUBLISHED image was built from, read
+      # from its index annotation (the same one gate.sh reads), not the floating :latest.
+      #
+      # A PR should be judged on its own change. Against :latest, upstream drift lands on
+      # whatever PR happens to be open: Dependabot's #29 (a one-line base bump) went red because
+      # :latest had moved to 2026.9.8, which refuses to start with a key that #30 later stripped.
+      # Dependabot keys docker PRs by tag, so that one red PR blocked every later base digest
+      # for two weeks. :latest also skips the gate's 3-day cooldown, so it smoke-tested releases
+      # the publish pipeline had not adopted yet.
+      #
+      # Early warning of upstream breakage is not lost, only moved: build.yml smoke-tests every
+      # candidate before it publishes anything, and caught 2026.9.8 on 2026-10-06 that way. The
+      # cost is that a PR FIXING an upstream break (like #30) is tested against the old upstream
+      # here, and is proven against the new one by the post-merge build - which publishes
+      # nothing if the fix is wrong.
+      #
+      # Falls back to :latest, with a warning, if the annotation is missing or the digest is no
+      # longer pullable (a fork, a deleted package version, an upstream GC).
+      - name: Resolve published upstream
+        id: upstream
+        env:
+          PUBLISHED: ghcr.io/${{ github.repository_owner }}/openclaw:latest
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/openclaw/openclaw:latest"
+          raw="$(docker buildx imagetools inspect --raw "$PUBLISHED")" || raw='{}'
+          digest="$(jq -r '.annotations["io.cookiesncache.openclaw.upstream.digest"] // ""' <<< "$raw")" || digest=''
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
+             docker buildx imagetools inspect "ghcr.io/openclaw/openclaw@${digest}" >/dev/null; then
+            ref="ghcr.io/openclaw/openclaw@${digest}"
+          else
+            echo "::warning::could not resolve the published upstream digest ('${digest}'); smoke-testing against the floating ${ref} instead"
+          fi
+          echo "Upstream for this smoke test: ${ref}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
       # No registry login: upstream openclaw and the LSIO base are public, so anonymous
       # pulls suffice. Dependabot-triggered runs get a read-only token and no secrets,
       # and this job needs neither.
       - name: Build (never pushed)
+        env:
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
         run: |
           set -euo pipefail
-          docker buildx build --load -t openclaw:pr .
+          docker buildx build --load --build-arg UPSTREAM_REF="$UPSTREAM_REF" -t openclaw:pr .
 
       - name: Smoke test
         run: bash .github/scripts/smoke.sh openclaw:pr

@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---- upstream: source the prebuilt /app and the Node runtime it was built against ----
-# OpenClaw's final stage is node:24-bookworm-slim (Debian, glibc, amd64), built from
-# source via pnpm. We copy its /app (dist/ + pruned node_modules with the native state-DB
-# module) rather than rebuild. This image is therefore amd64-only, like upstream.
+# OpenClaw's final stage is node:24-bookworm-slim (Debian 12, glibc 2.36), built from
+# source via pnpm. We copy its /app (dist/ + pruned node_modules with its glibc-linked
+# native addons) rather than rebuild. The state DB needs no addon: it is Node's built-in
+# node:sqlite. This image is amd64-only by choice; see NOTES.md "Build strategy".
 #
 # UPSTREAM_REF defaults to the floating tag so a bare `docker build .` works with no
 # arguments. CI always overrides it with a digest reference, and refuses to publish
@@ -12,9 +13,11 @@ ARG UPSTREAM_REF=ghcr.io/openclaw/openclaw:latest
 FROM ${UPSTREAM_REF} AS upstream
 
 # ---- final: LinuxServer.io base (s6-overlay v3 + PUID/PGID + /config) ----
-# Pinned by digest so the base cannot move under us; Dependabot's docker ecosystem
-# proposes bumps as a one-line PR.
-FROM ghcr.io/linuxserver/baseimage-ubuntu:noble@sha256:e3c0ef35fa0beae613f5571236325b147c7fff647da0e7ccd5aa1af7c46ca093
+# resolute = Ubuntu 26.04 LTS (NOTES.md "Base image choice"). Pinned by digest so the
+# base cannot move under us; Dependabot's docker ecosystem proposes bumps as a one-line PR.
+# It MUST stay the multi-arch INDEX digest, not a platform manifest (NOTES.md "Build
+# strategy"); `docker buildx imagetools inspect <tag>` prints the index digest first.
+FROM ghcr.io/linuxserver/baseimage-ubuntu:resolute@sha256:a4d7e43ad697e2113bc5466719c934fb539744f430924f86a1b3a2cd31a39041
 
 # HOME=/config so OpenClaw's $HOME-relative ~/.openclaw lands on the persistent volume.
 # LSIO_FIRST_PARTY=false: this is a custom/unofficial image on the LSIO base, so the base
@@ -64,8 +67,8 @@ RUN \
 # match is guaranteed by construction instead of by pinning NodeSource's floating 24.x head.
 # It also removes a `curl | bash` of a third party's script running as root at build time.
 # Verified: node is dynamically linked only against libdl/libstdc++/libm/libgcc_s/libpthread/
-# libc, all present on noble; bookworm's glibc 2.36 -> noble's 2.39 is the forward-compatible
-# direction; OpenSSL is statically linked, so the base's libssl is irrelevant.
+# libc, all present on resolute; bookworm's glibc 2.36 -> resolute's 2.43 is the forward-
+# compatible direction; OpenSSL is statically linked, so the base's libssl is irrelevant.
 COPY --from=upstream /usr/local/bin/node         /usr/local/bin/node
 COPY --from=upstream /usr/local/lib/node_modules /usr/local/lib/node_modules
 # Node's own license, covering its bundled components (OpenSSL, ICU, V8, zlib, ...). The

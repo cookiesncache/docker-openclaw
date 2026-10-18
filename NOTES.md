@@ -34,15 +34,16 @@ than rebuilding from source:
 
 - `FROM ${UPSTREAM_REF} AS upstream` → `COPY --from=upstream /app /app`, where `UPSTREAM_REF`
   defaults to the floating tag for local builds and is always a **digest** in CI
-- Final base `ghcr.io/linuxserver/baseimage-ubuntu:noble`, **pinned by digest** (Dependabot bumps it)
+- Final base `ghcr.io/linuxserver/baseimage-ubuntu:resolute` (Ubuntu 26.04 LTS), **pinned by index
+  digest** (Dependabot bumps it; see [Base image choice](#base-image-choice))
 - Node 24 **copied from the upstream stage**, not installed from NodeSource
 
 Upstream builds from source via pnpm; reproducing that (`pnpm install` + `build:docker` + `ui:build`)
 is high-maintenance, so the copy approach is used instead. Consequences:
 
 - **amd64 only, by choice rather than by constraint.** Both dependencies support arm64: upstream's
-  `:latest` index carries a `linux/arm64` manifest alongside amd64, and so does the LSIO base at the
-  digest pinned here (checked 2026-08-23).
+  `:latest` index carries a `linux/arm64` manifest alongside amd64, and so does the LSIO resolute
+  base at the digest pinned here (both re-checked 2026-10-17).
 
   The Dockerfile itself likely needs no change. In a buildx multi-platform build `FROM
   ${UPSTREAM_REF}` resolves to the matching platform variant for each target and `COPY
@@ -55,11 +56,15 @@ is high-maintenance, so the copy approach is used instead. Consequences:
   The real blocker is the smoke test, not the build. `smoke.sh` boots containers and asserts against
   a live gateway, `--load` does not accept multi-platform output, and booting arm64 on an amd64
   runner needs QEMU - so build-locally-then-smoke-then-push would have to be restructured. The
-  native state-DB module would also need the glibc argument below re-checked for arm64 rather than
-  assumed to transfer. See the multi-arch tracking issue; out of scope while nobody has asked for it.
-- **glibc base + Node major 24 are mandatory.** The copied `node_modules` contains a native state-DB
-  module compiled for Node 24 / Debian glibc. Ubuntu Noble (glibc 2.39 ≥ Bookworm's 2.36) is
-  forward-compatible. An Alpine/musl base or a different Node major would crash the module on load.
+  native addons and prebuilt executables would also need the glibc check below re-run for arm64
+  rather than assumed to transfer. See the multi-arch tracking issue; out of scope while nobody has
+  asked for it.
+- **glibc base + Node major 24 are mandatory.** The copied `node_modules` contains glibc-linked
+  native addons (`node-pty`, `fs-safe`, `matrix-sdk-crypto`, `onnxruntime`, `lancedb`, …) and
+  prebuilt executables (the Claude agent SDK's `claude`, Copilot's `copilot-runtime`, `tlon`). The
+  state DB is not among them: it uses Node's built-in `node:sqlite`. Ubuntu 26.04 (glibc 2.43 ≥
+  Bookworm's 2.36) is forward-compatible. An Alpine/musl base or a different Node major would crash
+  the addons on load.
 - Updates track upstream by resolving `:latest` to a digest daily in CI and rebuilding only when it
   moves. The build is pinned to that digest and records it as both an image label
   (`io.cookiesncache.openclaw.upstream.ref`) and an index annotation, so any published image can be
@@ -73,15 +78,34 @@ Copying `/usr/local/bin/node` + `/usr/local/lib/node_modules` from the upstream 
 and is *more* ABI-correct: it is the exact Node build the bundled native modules were compiled
 against, rather than whatever NodeSource's 24.x head is that morning.
 
-Verified before adopting it (Node 24.16.0 on the noble base):
+First verified on noble (Node 24.16.0, glibc 2.39). **Re-verified on resolute 2026-10-17**, against
+both upstream 2026.9.8 (the published digest) and 2026.10.4 (`:latest` that day), Node 24.21.0,
+on glibc 2.43 / libstdc++ 6.0.35:
 
-- `ldd node` needs only `libdl libstdc++ libm libgcc_s libpthread libc` — all present on noble.
-- glibc: bookworm 2.36 → noble 2.39, the forward-compatible direction.
-- OpenSSL 3.5.6 is statically linked, so the base's `libssl` is irrelevant.
-- Global `fetch` works, so the `HEALTHCHECK` is unaffected.
-- Full gateway boot reaches `ready` and `/healthz` returns 200; `/config/.openclaw/state/openclaw.sqlite`
-  plus its `-wal`/`-shm` appear, which is the proof the **native state-DB module actually loaded** —
-  `openclaw.mjs --version` does not exercise it, so it is not sufficient evidence on its own.
+- `ldd node` needs only `libdl libstdc++ libm libgcc_s libpthread libc` — all present on resolute.
+  Its highest symbol versions are `GLIBC_2.28`, `GLIBCXX_3.4.21` and `CXXABI_1.3.11`.
+- glibc: bookworm 2.36 → resolute 2.43, the forward-compatible direction.
+- OpenSSL (3.5.8) is statically linked, so the base's `libssl` is irrelevant.
+- `node:sqlite` (SQLite 3.53.4), `crypto`, full ICU and global `fetch` all work, so the state DB and
+  the `HEALTHCHECK` are unaffected.
+- Every x86-64 Linux ELF under `/app` (32 of the 86 ELFs in each build; the rest are other
+  platforms' prebuilds) resolves every `NEEDED` library, and none needs more than `GLIBC_2.34`.
+  Each native addon `require()`s cleanly under the copied Node (`matrix-sdk-crypto`, `node-pty`,
+  `fs-safe`, Copilot's `runtime.node`, `onnxruntime`, `lancedb`, `koffi`, `davey`, `lightningcss`,
+  …), and `sqlite-vec` loads as a `node:sqlite` extension.
+- The prebuilt executables run: `claude --version` (agent SDK) prints `2.1.274 (Claude Code)`,
+  `tlon --version` prints `0.5.0`, and `copilot-runtime` starts and rejects the flag with its own
+  usage error (it has no `--version`), which still proves the loader and libc start-up succeed.
+  `authenticate-pam` is not shipped by either upstream build.
+
+Method: the upstream amd64 layers were pulled straight from GHCR, `/app` and `/usr/local`
+extracted, and checked with `ldd` / `objdump -T` / `require()` on a stock Ubuntu 26.04 host
+(glibc 2.43-2ubuntu2; LSIO's ls29 carries 2.43-2ubuntu2.4, a security revision of the same glibc
+with the same symbol versions). Not a container build, so the image itself is covered by CI below.
+
+The boot test is CI's: the gateway reaches `ready` and `/healthz` returns 200, and
+`/config/.openclaw/state/openclaw.sqlite` plus its `-wal`/`-shm` appear — the proof `node:sqlite`
+actually opened the state DB, which `openclaw.mjs --version` does not exercise.
 
 CI re-runs that boot test on every publish, including the scheduled upstream-tracking build, because
 this strategy couples us to upstream's internal `/usr/local` layout and Node major. If upstream ever
@@ -97,6 +121,39 @@ replacement control is a publish-date check before running an update:
 ```bash
 npm view @openclaw/brave-plugin@latest version time
 ```
+
+### Base image choice
+
+The final stage is LSIO's `baseimage-ubuntu:resolute` (Ubuntu 26.04 LTS), moved from `:noble`
+(24.04) on 2026-10-17. A choice, not an LSIO mandate:
+
+- **Support window.** 26.04 has standard support to about 2031, 24.04 to about 2029. Ubuntu
+  publishes security fixes for both on the same days, so the move buys time, not patch speed.
+- **LSIO's direction.** `resolute` is now the default branch of `docker-baseimage-ubuntu`, built
+  weekly (ls1 on 2026-04-05 through ls29 on 2026-10-14). `docker-jellyfin` and `docker-plex` went
+  live on it on 2026-07-14; tool images such as code-server, openvscode-server, kasm and duplicati
+  were still on noble when this was written.
+- **Same LSIO layer.** The noble and resolute bases carry an identical `root/`, s6-overlay 3.2.1.0,
+  docker-mods v3, `lsiown` and `with-contenv`, so nothing under this repo's `root/` changed.
+- **Nothing OpenClaw runs comes from the base** except glibc and libstdc++. Node and `/app` are
+  copied from upstream, so the glibc check under
+  [Why Node is copied](#why-node-is-copied-instead-of-installed) is the whole compatibility question.
+
+What users do see is the Ubuntu userland: python3 3.12 → 3.14 (virtualenvs under `/config` must
+be recreated; PEP 594 modules are gone), git 2.43 → 2.53, the `openssl` CLI 3.0 → 3.5, curl 8.5
+→ 8.18, and most coreutils (`mkdir`, `chown`, `chmod`, `ln`, `date`, `ls`, `cat`, …) are the Rust
+uutils rewrite. `cp`, `mv`, `rm`, `df` and `true` remain GNU, and every GNU tool is installed as
+`gnu<name>`. This repo's own scripts use only `mkdir -p` (uutils), `cp` (still GNU) and LSIO's
+`lsiown`, all exercised by every smoke boot.
+
+One harmless resolute quirk: LSIO's Dockerfile copies its apt sources to `/etc/apt/sources.d/`,
+which apt 3.2 does not read, so the stock `/etc/apt/sources.list.d/ubuntu.sources` is what applies.
+That is the plain Ubuntu archive either way.
+
+The image never runs `apt-get upgrade`, and the monthly `APT_EPOCH` refresh reinstalls only the
+eight named packages. Base libraries such as libc6 and libpam are therefore refreshed **only**
+through the Dependabot digest bump, which is why a stalled base PR is urgent rather than cosmetic:
+see the comment in `.github/dependabot.yml` for how one red PR freezes the pin.
 
 ## The publish gate
 

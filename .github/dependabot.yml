@@ -36,10 +36,21 @@ updates:
     # opens, and the pin silently freezes while forced rebuilds keep baking a stale base -
     # userland gets older, not fresher.
     #
-    # Measured 2026-08 from linuxserver/docker-baseimage-ubuntu releases ls64..ls82 (19 noble
-    # releases, 18 intervals): modal gap exactly 7.0 days, minimum 3.4 days, with occasional
-    # 14d and 22.9d outliers. So 14 would open a PR only in the rare long gaps, and even 7
-    # races the modal cycle. 3 clears the 3.4-day minimum with the little headroom there is.
-    # Re-measure before raising this.
+    # Measured 2026-10-17 from linuxserver/docker-baseimage-ubuntu resolute releases ls1..ls29
+    # (2026-04-05 to 2026-10-14, 28 intervals): median 7.0 days, minimum 0.8 (a same-commit
+    # rebuild, ls10 -> ls11), maximum 14.0. Only four intervals are under 6 days: that rebuild,
+    # two in the April launch weeks (3.7, 3.3) and one off-cycle release (ls14 -> ls15, 3.4). So
+    # 14 would never open a PR and even 7 races the weekly cycle; 3 sits under every regular
+    # interval. (noble measured the same shape in 2026-08: modal 7.0, minimum 3.4.) Re-measure
+    # before raising this.
+    #
+    # Two things Dependabot's own logs show, as of 2026-10-17:
+    #   - This cooldown is currently INERT. Every docker run logs "No verified registry
+    #     publication date source for ghcr.io; skipping cooldown", and each PR carries a
+    #     "Cooldown could not be applied" banner. Kept so it applies if GHCR support lands.
+    #   - Docker PRs are keyed by TAG, not digest: "Pull request #29 already exists for
+    #     linuxserver/baseimage-ubuntu with latest version noble". One open PR therefore blocks
+    #     every later digest for that tag, so a red base-bump PR freezes the base outright. Fix
+    #     or close a red one promptly; `@dependabot rebase` re-runs its CI against current main.
     cooldown:
       default-days: 3

@@ -7,6 +7,35 @@ bundles; this file records changes to the packaging itself.
 
 ### Changed — action may be required
 
+**The base image is now Ubuntu 26.04 LTS (`resolute`), up from 24.04 (`noble`).**
+
+OpenClaw itself is unaffected: its application and Node runtime are copied unchanged from the
+official image. What changes is the Ubuntu userland around it, which matters if you run your own
+scripts or tools inside the container.
+
+**If you created a Python virtualenv under `/config`, recreate it.** `python3` is now 3.14 (was
+3.12), and a virtualenv is tied to the interpreter that created it. Scripts that import a module
+removed by [PEP 594](https://peps.python.org/pep-0594/) in Python 3.13 (`cgi`, `crypt`, `imghdr`,
+`pipes`, `telnetlib` and others) also stop working.
+
+Other tools in the container:
+
+| Tool | 24.04 | 26.04 |
+|---|---|---|
+| `python3` | 3.12 | 3.14 |
+| `git` | 2.43 | 2.53 |
+| `openssl` (command-line tool) | 3.0 | 3.5 |
+| `curl` | 8.5 | 8.18 |
+
+Most coreutils — `mkdir`, `chown`, `chmod`, `ln`, `date`, `ls`, `cat` and others — are now the
+Rust rewrite (uutils), which is Ubuntu 26.04's default. `cp`, `mv`, `rm`, `df` and `true` remain
+GNU, and every GNU tool is still installed with a `gnu` prefix (`gnudate`, `gnuls`, …) for a script
+that depends on a GNU-only flag.
+
+To roll back, pin the last `-ls` tag published before this change — `2026.9.8-ls79` at the time of
+writing (see [Updating](README.md#updating)).
+26.04 has standard support until about 2031, two years past 24.04.
+
 **`OPENCLAW_ALLOW_INSECURE_AUTH` is removed.**
 
 OpenClaw retired `gateway.controlUi.allowInsecureAuth`; it already had no effect, and from
