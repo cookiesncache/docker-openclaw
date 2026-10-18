@@ -20,6 +20,11 @@ updates:
   # The LSIO base image digest pin in the Dockerfile. Note that Docker is not a GitHub
   # Advisory Database ecosystem, so these arrive as routine version updates with no
   # security metadata attached - never as security updates.
+  #
+  # Dependabot does not apply the cooldown below to GHCR images: every docker run logs "No
+  # verified registry publication date source for ghcr.io; skipping cooldown". The delay these
+  # PRs actually get is the soak in release-soaked (workflows/dependabot-auto-merge.yml), whose
+  # ceiling assumes this weekly interval.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
