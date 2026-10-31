@@ -11,6 +11,25 @@ cd /app || exit 1
 BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" || BIND="lan"
 [[ -n "${BIND}" ]] || BIND="lan"
 
+# Launch through upstream's container activation adapter, as upstream's own image does
+# (its ENTRYPOINT is `tini -s -- node /app/docker-entrypoint.mjs`). For a foreground gateway it runs
+# `openclaw doctor --fix --non-interactive` under exclusive maintenance ownership, then
+# execve()s into the gateway - same PID, so s6 still supervises the gateway directly.
+#
+# Doctor is what advances the agent/state database schemas after an image update. The
+# gateway itself only admits state: started directly, it refuses an old schema and exits,
+# and s6 restarts it forever while the container sits "unhealthy". See NOTES.md
+# "Startup Doctor". A failed Doctor exits non-zero and s6 retries the whole service.
+#
+# The fallback covers only an upstream that drops or renames the adapter; smoke.sh fails
+# the build in that case, so it is not expected to ship.
+if [[ -f docker-entrypoint.mjs ]]; then
+    exec \
+        s6-setuidgid abc \
+            node docker-entrypoint.mjs node openclaw.mjs gateway --bind "${BIND}" --port 18789
+fi
+
+echo "**** WARN: /app/docker-entrypoint.mjs missing - starting gateway WITHOUT startup Doctor ****"
 exec \
     s6-setuidgid abc \
         node openclaw.mjs gateway --bind "${BIND}" --port 18789
