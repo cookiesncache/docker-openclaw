@@ -75,6 +75,33 @@ startup rather than trying to correct it.
 
 ### Fixed
 
+**Image updates that change OpenClaw's database schema no longer take the gateway down.**
+
+The service started the gateway directly with `node openclaw.mjs gateway`. Upstream's image starts
+it through `docker-entrypoint.mjs`, which runs `openclaw doctor --fix --non-interactive` first,
+and that Doctor pass is the only step that advances the agent and state database schemas. The
+gateway itself refuses an old schema. So when an update raised the schema (2026.9.8 needed agent
+schema 24, 2026.10.5 needs 25), the gateway exited on every start with
+`uses schema version N; stop active agents and run openclaw doctor --fix`. s6 restarted it
+indefinitely and the container showed only "unhealthy".
+
+The service now launches through upstream's adapter, so Doctor runs on every start and the gateway
+takes over the same PID once it finishes. Doctor backs up each database before migrating it.
+Expect the first boot after a schema-changing update to take a minute or two longer. Normal boots
+add a few seconds.
+
+**If your container is currently stuck**, updating to this image fixes it on the next start with no
+manual steps. Until then the manual fix is:
+
+```bash
+docker exec <container> s6-svc -d /run/service/svc-openclaw
+docker exec -u abc -e HOME=/config -w /app <container> node openclaw.mjs doctor --fix --non-interactive
+docker exec <container> s6-svc -u /run/service/svc-openclaw
+```
+
+CI now fails the build if the startup Doctor pass is missing from the boot log. A fresh volume
+boots healthy either way, so the health check alone could not catch this.
+
 **`gateway.bind` is now a bind *mode*, not a host address.**
 
 The Tailscale path wrote the literal string `127.0.0.1` into `gateway.bind` and passed it to

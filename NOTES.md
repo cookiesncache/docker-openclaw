@@ -8,7 +8,7 @@ repository and docs (last checked 2026-06-28); re-verify before relying on them,
 | Aspect | Value |
 |---|---|
 | Final base | `node:24-bookworm-slim` (Debian 12, glibc, amd64) |
-| `ENTRYPOINT` / `CMD` | `["tini","-s","--"]` / `["node","openclaw.mjs","gateway"]` |
+| `ENTRYPOINT` / `CMD` | `["tini","-s","--","node","/app/docker-entrypoint.mjs"]` / `["node","openclaw.mjs","gateway"]` (re-checked 2026-10-30) |
 | `WORKDIR` | `/app` |
 | Runs as | `node` user, uid 1000 |
 | Config/state home | `$HOME/.openclaw` (state in `.openclaw/state`) |
@@ -483,8 +483,8 @@ s6-overlay v3 layout under `root/etc/s6-overlay/s6-rc.d/`:
 
 - `init-openclaw-config` (oneshot) — builds the `/config` tree, seeds `openclaw.json`, applies the auth
   variable, `lsiown`s to the runtime user. Linked into the base `init-config-end` bundle.
-- `svc-openclaw` (longrun) — runs `node openclaw.mjs gateway --bind "$(openclaw-resolve-bind)" --port 18789`
-  as `abc` via `s6-setuidgid`. Depends on the base `init-services` bundle (so it starts after all
+- `svc-openclaw` (longrun) — runs `node docker-entrypoint.mjs node openclaw.mjs gateway --bind "$(openclaw-resolve-bind)" --port 18789`
+  as `abc` via `s6-setuidgid` (see [Startup Doctor](#startup-doctor)). Depends on the base `init-services` bundle (so it starts after all
   init stages).
 - `/usr/local/bin/openclaw-resolve-bind` — single source of truth for the inbound bind, used by both
   the service and the config oneshot so they cannot disagree:
@@ -575,6 +575,39 @@ refuses to run them. Mount it from a path outside `/config`, read-only. Nesting 
 `/config` mount to keep a single appdata folder does work, but defeats the `:ro`: the container still
 reaches the same files read-write via `/config`, leaving a root-executed boot script in storage owned
 by `abc` — the user OpenClaw runs tools as.
+
+## Startup Doctor
+
+Upstream separates two jobs. **Doctor** (`openclaw doctor --fix`) owns state repair and schema
+migrations. The **gateway** only *admits* state: if a database schema is older than the gateway
+supports, it logs `uses schema version N; ... run openclaw doctor --fix` and exits. Upstream's
+image connects the two with `/app/docker-entrypoint.mjs`. For a foreground `gateway` command it
+runs `doctor --fix --non-interactive` under exclusive maintenance ownership, then `execve()`s the
+original command. Its docs (`install/docker.md`, "Upgrading container images") say routine image
+upgrades need no separate Doctor pass, and warn that "a custom entrypoint bypasses this activation
+step".
+
+This image has no ENTRYPOINT (s6's `/init` is PID 1), so `svc-openclaw` calls the adapter itself:
+`s6-setuidgid abc node docker-entrypoint.mjs node openclaw.mjs gateway ...`. Things to preserve:
+
+- **Same PID.** The adapter `execve()`s, so the gateway ends up as a direct child of
+  `s6-supervise svc-openclaw` with no wrapper left behind. Signals during Doctor are forwarded to it.
+- **Doctor runs as `abc`**, like the gateway. If it ran as root, it would leave root-owned files on
+  `/config` that the gateway cannot write.
+- **A failing Doctor exits non-zero**, so s6 restarts the service and retries. That matches upstream,
+  where the container exits.
+- **The argv shape matters.** The adapter runs Doctor only when `argv[0]` resolves to the node
+  binary and `argv[1]` resolves to `/app/openclaw.mjs` (or `dist/entry.*`), and the command parses as
+  a foreground `gateway`/`gateway run`. Any other command passes through with no Doctor, silently.
+  The smoke test checks the boot log for `Doctor complete` to catch that.
+
+Before this change the service ran the gateway directly. That worked until 2026.9.8, the first update
+whose agent-schema migration (23 → 24) was left to Doctor (2026.9.x had migrated at gateway
+startup). 2026.10.5 (24 → 25) broke the same way. A fresh volume never shows the problem, so the
+health check alone passed throughout.
+
+Cost: Doctor adds a few seconds to a normal boot. A boot that migrates is slower; in one real
+2026.10.5 upgrade the gateway was healthy after ~100s. `HEALTHCHECK --start-period` is 2m to cover that.
 
 ## Open upstream issues to track
 

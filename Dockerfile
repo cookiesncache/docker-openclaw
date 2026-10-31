@@ -117,7 +117,9 @@ EXPOSE 18789
 
 # Restore upstream's health probe (lost when we copy only /app). /healthz is unauthenticated
 # on loopback, so this works regardless of the auth posture; Node 24 has a global fetch().
-HEALTHCHECK --interval=1m --timeout=10s --start-period=20s --retries=3 \
+# start-period covers the startup Doctor pass, which can take ~100s when it migrates a schema after
+# an image update (NOTES.md "Startup Doctor").
+HEALTHCHECK --interval=1m --timeout=10s --start-period=2m --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # No ENTRYPOINT/CMD on purpose: the baseimage's /init (s6-overlay) is PID 1 and

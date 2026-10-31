@@ -102,6 +102,21 @@ if [ "$db" != 1 ]; then
   exit 1
 fi
 
+# Startup Doctor. svc-openclaw launches through upstream's docker-entrypoint.mjs, which runs
+# `doctor --fix` before the gateway; that pass is the only thing that advances database schemas
+# after an image update. Without it the gateway still boots fine on a FRESH volume like this one,
+# so healthz alone cannot tell the two apart - only the log can. Losing it shows up weeks later as
+# a user's gateway crash-looping on "uses schema version N; ... run openclaw doctor --fix".
+boot_log="$(docker logs "$NAME" 2>&1 || true)"
+if has 'starting gateway WITHOUT startup Doctor' "$boot_log"; then
+  bad "upstream's /app/docker-entrypoint.mjs is gone - the gateway started without its startup Doctor pass"
+elif has 'Doctor complete' "$boot_log"; then
+  echo "  startup Doctor ran before the gateway"
+else
+  bad "no 'Doctor complete' in the container log - svc-openclaw is not running upstream's startup Doctor"
+  printf '%s\n' "$boot_log" | tail -40
+fi
+
 # Runtime packages that upstream's image ships and the LSIO base lacks. Nothing at boot touches
 # either, so losing one would otherwise surface only when someone enables the SSH sandbox backend
 # (`spawn ssh ENOENT`) or managed llama.cpp (llama-server cannot load libgomp.so.1).
