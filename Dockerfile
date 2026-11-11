@@ -43,15 +43,33 @@ ENV HOME="/config" \
 # Both read a single value computed once by the gate step.
 #
 # The package list mirrors upstream's runtime stage, minus tini (s6-overlay's /init is PID 1).
-# Neither of these is in the LSIO base:
+# None of these is in the LSIO base:
+#   acl            - getfacl/setfacl; Doctor's btrfs NOCOW rewrite carries ACLs over with them.
 #   libgomp1       - OpenMP runtime; the managed llama.cpp server links libgomp.so.1 and fails
 #                    its `llama-server --version` preflight without it.
 #   openssh-client - the SSH sandbox backend spawns `ssh` directly; git's SSH remotes need it too.
+#   psmisc         - fuser; the NOCOW rewrite uses it to prove nothing holds a store open.
+# Upstream also adds e2fsprogs (lsattr/chattr) for the rewrite; the LSIO base already has it.
+#
+# chattr and fuser are diverted OFF PATH, into /usr/libexec/openclaw-nocow, which makes NOCOW
+# opt-in: svc-openclaw/run puts that directory on PATH only when OPENCLAW_SQLITE_NOCOW is true.
+# Upstream offers no switch of its own (NOTES.md "SQLite NOCOW on btrfs"). Each one gates a
+# separate path:
+#   fuser  - without it, Doctor refuses to rewrite existing stores at its preflight.
+#   chattr - without it, a NEW database (fresh install, new agent) is created without +C on its
+#            directory; upstream logs one "Could not enable SQLite directory NOCOW" warning.
+# lsattr stays on PATH: Doctor's detection needs it and it changes nothing.
+# fuser's divert must be in place BEFORE psmisc unpacks, so dpkg writes it to the new path.
 ARG APT_EPOCH
 RUN \
+  echo "**** divert chattr and fuser off PATH (NOCOW opt-in) ****" && \
+  mkdir -p /usr/libexec/openclaw-nocow && \
+  dpkg-divert --local --rename --divert /usr/libexec/openclaw-nocow/chattr --add /usr/bin/chattr && \
+  dpkg-divert --local --rename --divert /usr/libexec/openclaw-nocow/fuser --add /usr/bin/fuser && \
   echo "**** install runtime packages (apt epoch: ${APT_EPOCH:-unset}) ****" && \
   apt-get update && \
   apt-get install -y --no-install-recommends \
+    acl \
     ca-certificates \
     curl \
     git \
@@ -61,7 +79,12 @@ RUN \
     openssh-client \
     openssl \
     procps \
+    psmisc \
     python3 && \
+  test -x /usr/libexec/openclaw-nocow/chattr && \
+  test -x /usr/libexec/openclaw-nocow/fuser && \
+  ! command -v chattr && \
+  ! command -v fuser && \
   echo "**** cleanup ****" && \
   apt-get clean && \
   rm -rf \

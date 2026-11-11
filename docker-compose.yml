@@ -21,6 +21,9 @@ services:
       # Control UI allowed origins (CSRF protection). Set to the URL you reach the UI from,
       # e.g. https://openclaw.YOUR-TAILNET.ts.net  (comma-separated for multiple).
       - OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS=${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS:-}
+      # Advanced, btrfs only. true lets OpenClaw make its SQLite databases NOCOW, which turns off
+      # btrfs checksums for them. Default false keeps them copy-on-write. See README "btrfs and NOCOW".
+      - OPENCLAW_SQLITE_NOCOW=${OPENCLAW_SQLITE_NOCOW:-false}
       # Optional extra provider keys / bot tokens (set in .env if used):
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}

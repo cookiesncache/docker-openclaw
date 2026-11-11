@@ -11,6 +11,27 @@ cd /app || exit 1
 BIND="$(/usr/local/bin/openclaw-resolve-bind 2>/dev/null)" || BIND="lan"
 [[ -n "${BIND}" ]] || BIND="lan"
 
+# SQLite NOCOW on btrfs is opt-in (NOTES.md "SQLite NOCOW on btrfs").
+#
+# On btrfs, upstream's startup Doctor rewrites existing SQLite stores as NOCOW, and new databases
+# get +C on their directory at creation, whenever the tools are present. Upstream has no switch
+# to decline either. NOCOW also turns off btrfs data checksums for those files, so on a RAID1 pool
+# scrub can no longer detect or repair corruption in them. The Dockerfile keeps chattr and fuser
+# off PATH; putting them back is the opt-in. Doctor and the gateway both inherit this PATH.
+# Values match upstream's truthy set.
+case "${OPENCLAW_SQLITE_NOCOW,,}" in
+    true|1|yes|on)
+        export PATH="/usr/libexec/openclaw-nocow:${PATH}"
+        echo "**** OPENCLAW_SQLITE_NOCOW is set: on btrfs, Doctor may rewrite the SQLite stores as NOCOW, which drops btrfs checksums for them. ****"
+        ;;
+    *)
+        # Without this, Doctor's refusal reads like a broken image. Only btrfs ever gets one.
+        if [[ "$(stat -f -c %T /config/.openclaw 2>/dev/null || stat -f -c %T /config 2>/dev/null)" == "btrfs" ]]; then
+            echo "**** /config is on btrfs. If Doctor logs 'SQLite NOCOW repair refused', that is expected: this image keeps the SQLite stores copy-on-write and checksummed unless OPENCLAW_SQLITE_NOCOW=true. ****"
+        fi
+        ;;
+esac
+
 # Launch through upstream's container activation adapter, as upstream's own image does
 # (its ENTRYPOINT is `tini -s -- node /app/docker-entrypoint.mjs`). For a foreground gateway it runs
 # `openclaw doctor --fix --non-interactive` under exclusive maintenance ownership, then
