@@ -129,10 +129,23 @@ listening on loopback only. That path previously had no coverage, which is how t
   content — `:52dca30` (commit dated 2026-06-29) was serving an image built 2026-08-17. Existing such
   tags remain in the registry but are frozen. The commit is still recorded as the
   `org.opencontainers.image.revision` annotation.
+- **SQLite NOCOW on btrfs is now opt-in, and off by default.** On btrfs, OpenClaw makes its SQLite
+  databases NOCOW, which also turns off btrfs checksums for them: on a RAID1 pool a scrub can no
+  longer detect or repair corruption in those files. Upstream has no way to decline this, so the
+  image now keeps `chattr` and `fuser` off PATH unless `OPENCLAW_SQLITE_NOCOW=true`. Nothing changes
+  for databases that already exist; earlier images could never rewrite them. **New** databases on
+  btrfs (a fresh install, a new agent) are now created copy-on-write; earlier images created them
+  NOCOW. Existing NOCOW directories stay that way. To check or revert one, see
+  [btrfs and NOCOW](README.md#btrfs-and-nocow). With the default, Doctor logs a harmless
+  `SQLite NOCOW repair refused` on every start when `/config` is on btrfs. The container prints a
+  notice before it.
 
 ### Added
 
 - `OPENCLAW_GATEWAY_BIND` — advanced, empty by default. See the table above.
+- `OPENCLAW_SQLITE_NOCOW` — advanced, `false` by default. See [btrfs and NOCOW](README.md#btrfs-and-nocow).
+- `acl` and `psmisc`, matching upstream's runtime packages (upstream `main` adds them for the NOCOW
+  rewrite). `getfacl`/`setfacl` are on PATH; `fuser` is installed off PATH (see above).
 - `libgomp1` and `openssh-client`, matching upstream's runtime packages. Managed llama.cpp local
   models need `libgomp1` (the `llama-server` build links OpenMP), and the SSH sandbox backend
   (`agents.defaults.sandbox.backend: "ssh"`) runs `ssh` directly, so it used to fail with

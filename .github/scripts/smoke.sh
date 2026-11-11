@@ -5,20 +5,23 @@
 # ci.yml (on pull requests). Invoked as `bash .github/scripts/smoke.sh <image-ref>` so it does
 # not depend on the executable bit surviving a Windows checkout.
 #
-# Two containers are booted, in parallel, because they exercise different bind paths:
+# Three containers are booted, in parallel, because they exercise different startup paths:
 #   $NAME     - no Tailscale variables. The historical default: bind mode `lan`.
 #   $NAME_TS  - TAILSCALE_SERVE_PORT set. The Unraid "Use Tailscale + Serve" path, which binds
 #               loopback. This path previously had ZERO coverage, which is exactly how a bind
 #               value OpenClaw does not accept shipped to users: the old assertion only checked
 #               that the resolver returned something non-empty, and "127.0.0.1" satisfies that.
+#   $NAME_NC  - OPENCLAW_SQLITE_NOCOW=true. CI's volume is not btrfs, so nothing gets rewritten;
+#               this only proves the opt-in reaches the gateway's PATH.
 set -euo pipefail
 
 IMAGE="${1:?usage: smoke.sh <image-ref>}"
 BASE="smoke-$$"
 NAME="${BASE}-default"
 NAME_TS="${BASE}-tailscale"
+NAME_NC="${BASE}-nocow"
 
-cleanup() { docker rm -f "$NAME" "$NAME_TS" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f "$NAME" "$NAME_TS" "$NAME_NC" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 fail=0
@@ -53,6 +56,12 @@ docker run -d --name "$NAME_TS" \
   -e PUID=1000 -e PGID=1000 \
   -e OPENCLAW_GATEWAY_TOKEN="$TOKEN" \
   -e TAILSCALE_SERVE_PORT=18789 \
+  "$IMAGE" >/dev/null
+
+docker run -d --name "$NAME_NC" \
+  -e PUID=1000 -e PGID=1000 \
+  -e OPENCLAW_GATEWAY_TOKEN="$TOKEN" \
+  -e OPENCLAW_SQLITE_NOCOW=true \
   "$IMAGE" >/dev/null
 
 wait_healthy() {
@@ -132,6 +141,41 @@ if has 'libgomp\.so\.1' "$ld_cache"; then
   echo "  libgomp.so.1 is in the linker cache"
 else
   bad "libgomp.so.1 is not in the linker cache (libgomp1)"
+fi
+
+# NOCOW opt-in, default side (NOTES.md "SQLite NOCOW on btrfs"). chattr and fuser must be installed
+# but OFF the default PATH: either one reappearing there - a base image that ships psmisc, a
+# divert that stops applying - would quietly turn NOCOW back on for every btrfs user. The ACL
+# tools stay on PATH. Each one is run, not just looked up, so it has to execute as well as exist.
+# chattr has no version-only mode (`-V` still wants files and exits 1), so match its usage line.
+nocow_tools="$(docker exec "$NAME" sh -c '
+  for t in chattr fuser; do command -v "$t" >/dev/null && echo "ON-PATH $t"; done
+  /usr/libexec/openclaw-nocow/chattr 2>&1 | grep -q "^Usage: .*chattr" && echo "diverted chattr ok"
+  /usr/libexec/openclaw-nocow/fuser -V >/dev/null 2>&1 && echo "diverted fuser ok"
+  getfacl --version >/dev/null 2>&1 && setfacl --version >/dev/null 2>&1 && echo "acl ok"
+' 2>&1 || true)"
+if has '^ON-PATH' "$nocow_tools"; then
+  bad "chattr/fuser are on the default PATH, so NOCOW is no longer opt-in: ${nocow_tools}"
+fi
+for want in 'diverted chattr ok' 'diverted fuser ok' 'acl ok'; do
+  if has "^${want}$" "$nocow_tools"; then echo "  ${want}"; else bad "NOCOW tooling: '${want}' failed (${nocow_tools})"; fi
+done
+
+# The service's PATH, not docker exec's: svc-openclaw/run is what decides, and Doctor inherits it
+# from the gateway's launch. The PID comes from s6, not pgrep: the gateway retitles itself to plain
+# `openclaw`, so no command-line pattern finds it. Two execs because each half needs a different
+# user: s6-svstat needs root to read the service dir, and /proc/<pid>/environ of an abc process is
+# readable only as abc (root in the container lacks CAP_SYS_PTRACE).
+gateway_path() { # container
+  local pid
+  pid="$(docker exec "$1" /command/s6-svstat -p /run/service/svc-openclaw 2>&1 || true)"
+  docker exec -u abc "$1" sh -c "tr '\0' '\n' < /proc/${pid}/environ | grep '^PATH='" 2>&1 || true
+}
+default_path="$(gateway_path "$NAME")"
+if has '^PATH=' "$default_path" && ! has 'openclaw-nocow' "$default_path"; then
+  echo "  gateway PATH excludes the NOCOW tools by default"
+else
+  bad "default gateway PATH includes the NOCOW tools, or could not be read: '${default_path}'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -233,6 +277,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Container 3: NOCOW opted in
+# ---------------------------------------------------------------------------
+echo "== nocow container =="
+wait_healthy "$NAME_NC"
+
+nc_path="$(gateway_path "$NAME_NC")"
+if has '^PATH=/usr/libexec/openclaw-nocow:' "$nc_path"; then
+  echo "  OPENCLAW_SQLITE_NOCOW=true put the NOCOW tools on the gateway's PATH"
+else
+  bad "with OPENCLAW_SQLITE_NOCOW=true the gateway PATH lacks /usr/libexec/openclaw-nocow: '${nc_path}'"
+fi
+nc_log="$(docker logs "$NAME_NC" 2>&1 || true)"
+if has 'OPENCLAW_SQLITE_NOCOW is set' "$nc_log"; then
+  echo "  NOCOW opt-in notice present in container log"
+else
+  bad "the OPENCLAW_SQLITE_NOCOW opt-in notice is missing from the container log"
+fi
+
+# ---------------------------------------------------------------------------
 # Resolver truth table
 #
 # Invoked as `bash <script>` rather than by its shebang. s6-overlay v3's with-contenv runs
@@ -282,4 +345,4 @@ if [ "$fail" != 0 ]; then
   exit 1
 fi
 
-echo "::notice::smoke test passed (both containers healthy, state DB open, bind=loopback honoured under Tailscale)"
+echo "::notice::smoke test passed (all containers healthy, state DB open, bind=loopback honoured under Tailscale, NOCOW opt-in gated)"

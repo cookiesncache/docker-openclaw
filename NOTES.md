@@ -609,8 +609,81 @@ health check alone passed throughout.
 Cost: Doctor adds a few seconds to a normal boot. A boot that migrates is slower; in one real
 2026.10.5 upgrade the gateway was healthy after ~100s. `HEALTHCHECK --start-period` is 2m to cover that.
 
+## SQLite NOCOW on btrfs
+
+On btrfs, upstream makes the SQLite stores NOCOW through two separate paths:
+
+| Path | Where (upstream source) | Shells out to |
+|---|---|---|
+| **Existing stores**: Doctor `--fix` rewrites any store found without `C` | `src/flows/doctor-health.ts` → `repairSqliteNoCow` | `fuser`, `getfacl`/`setfacl`, `mv --exchange`, `chattr` |
+| **New databases**: `chattr +C` on the directory before SQLite creates the file | `src/infra/sqlite-wal-filesystem.ts` `prepareSqliteDatabaseDirectory` | `chattr` |
+
+Neither can be declined. `OPENCLAW_DOCTOR_SQLITE_NOCOW_REPAIR` is read only while a managed update
+is in progress, and only as an opt-in. Outside one, the rewrite runs on every `doctor --fix`,
+which means every container start.
+
+**Why this image makes it opt-in.** NOCOW turns off btrfs data checksums (and compression) for
+those files. On a RAID1 profile, Unraid's default for a multi-device btrfs pool, a NOCOW file is
+still mirrored, but btrfs can no longer tell which copy is good, so scrub neither detects nor
+repairs corruption in it. SQLite's `integrity_check` validates b-tree structure, not page
+contents. These are the most valuable files in `/config`, and on a typical single-user install
+they are about 10 MB each on NVMe, where CoW fragmentation costs little. Upstream's case for NOCOW
+is large, busy stores (openclaw#192402: 62.5 MB on a NAS, COMMITs up to 27 s).
+
+**Mechanism.** Program availability is the only lever upstream leaves. The Dockerfile installs
+upstream's packages (`acl`, `psmisc`) but `dpkg-divert`s `chattr` and `fuser` into
+`/usr/libexec/openclaw-nocow`, which is off PATH. `svc-openclaw/run` prepends that directory to PATH
+when `OPENCLAW_SQLITE_NOCOW` is truthy (upstream's set: `true`/`1`/`yes`/`on`). Doctor and the
+gateway inherit it. With the default PATH:
+
+- Doctor's rewrite preflight runs `fuser` on a probe file, gets ENOENT, and refuses with
+  `fuser cannot inspect processes. Original store remains in place.` That happens before anything
+  is copied or swapped. Detection still runs (`lsattr` stays on PATH), so every start logs a
+  "without NOCOW" plus a "repair refused" line per store. The run script prints a notice first
+  when `/config` is btrfs, so the refusal does not read like a broken image.
+- `prepareSqliteDatabaseDirectory` catches `spawnSync chattr ENOENT` and logs `Could not enable
+  SQLite directory NOCOW; continuing with filesystem defaults` once per process.
+
+`docker exec` sessions get the image PATH, not the service's, so a manual `doctor --fix` also
+refuses unless the directory is prepended by hand:
+`docker exec -u abc -w /app <container> sh -c 'PATH=/usr/libexec/openclaw-nocow:$PATH node openclaw.mjs doctor --fix'`.
+
+**Only `chattr` is used for this.** The 2026.11.3 dist calls `chattr` solely for `+C`. `fuser` has
+one other caller: port diagnostics (`ports-*.mjs`), which ran without it before this change too.
+
+**Verified** on a scratch btrfs directory (Unraid RAID1 cache, 2026.11.3), with fresh volumes and
+PUID/PGID 99/100:
+
+- default, fresh install: store dirs are created without `C`; the `chattr ENOENT` warning appears.
+- default, restart: both stores are flagged; Doctor refuses at the `fuser` preflight; the files
+  stay CoW.
+- `OPENCLAW_SQLITE_NOCOW=true` on those existing stores: Doctor rewrites the state store. `C` ends up
+  on the dir and the file, and ownership and modes are kept. It refuses the agent store on every
+  start with `store files are open (pids: N)`, where N is Doctor's own process. That is
+  openclaw#191957, fixed on `main` by openclaw#192024 (`closeAgentDatabaseReaders`), which is absent
+  from the 2026.11.3 dist. It is upstream behaviour and passes straight through the opt-in.
+- `OPENCLAW_SQLITE_NOCOW=true`, fresh install: all store dirs and files are created with `C`.
+- The README's revert recipe (`mv`, `mkdir`, `cp -a --reflink=never`) on that fresh install: `C`
+  is gone, ownership and modes are kept, both databases pass `PRAGMA quick_check`, and the gateway
+  is healthy.
+
+**What would break it.** Each of these would silently switch NOCOW back on for every btrfs user:
+
+- The base image starts shipping `psmisc`, or the divert stops applying. The Dockerfile asserts
+  `! command -v chattr` / `! command -v fuser` at build time, and smoke.sh checks it again at runtime.
+- Upstream stops shelling out (setting `FS_IOC_SETFLAGS` from a native addon, say) or probes
+  absolute paths. No CI check can see this: CI's volume is not btrfs. After an upstream release
+  that touches `doctor-sqlite-nocow` or `sqlite-wal-filesystem`, grep the dist for `"chattr"` and
+  `"fuser"`, or re-run the scratch test above. smoke.sh boots an opted-in container, but only to
+  check its PATH.
+
+Retire the mechanism once upstream has a real opt-out (none has been requested yet). Then map
+`OPENCLAW_SQLITE_NOCOW` onto it and drop the divert.
+
 ## Open upstream issues to track
 
 - [openclaw#41881](https://github.com/openclaw/openclaw/issues/41881) — multi-arch (arm64/armv7) builds.
 - [openclaw#61779](https://github.com/openclaw/openclaw/issues/61779) — gateway binds 127.0.0.1 inside
   the container, blocking Docker port forwarding unless `--bind lan` is set.
+- [openclaw#191957](https://github.com/openclaw/openclaw/issues/191957) — Doctor refuses the NOCOW
+  rewrite of agent stores it holds open itself. Fixed on `main` (#192024), not yet in a stable release.

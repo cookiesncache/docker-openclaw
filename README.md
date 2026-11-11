@@ -70,6 +70,7 @@ A full `docker-compose.yml` (with the optional provider keys) and an `.env.examp
 | `ANTHROPIC_API_KEY` | — | Anthropic API key (optional). |
 | `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` | — | Comma-separated allowed origins for the Control UI (CSRF protection). Set to the URL you reach the UI from. |
 | `OPENCLAW_GATEWAY_BIND` | — | Advanced. Inbound bind **mode** (`auto`/`loopback`/`lan`/`tailnet`/`custom`), not a host address. Empty → `loopback` when Tailscale Serve is enabled, else `lan`. See [Access](#access). |
+| `OPENCLAW_SQLITE_NOCOW` | `false` | Advanced, btrfs only. `true` lets OpenClaw make its SQLite databases NOCOW, which turns off btrfs checksums for them. See [btrfs and NOCOW](#btrfs-and-nocow). |
 
 Additional optional provider keys / bot tokens are also passed through:
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `ZAI_API_KEY`,
@@ -81,6 +82,61 @@ Additional optional provider keys / bot tokens are also passed through:
 |---|---|
 | `/config` | Config, state and workspace (`openclaw.json`, `state/`, `workspace/`). |
 | `18789/tcp` | Gateway / Control UI. |
+
+### btrfs and NOCOW
+
+On btrfs, OpenClaw wants its SQLite databases NOCOW (`chattr +C`). Copy-on-write fragments a file
+that is rewritten in place, and that can make large, busy databases slow to commit. **NOCOW also
+turns off btrfs data checksums and compression for those files.** On a RAID1 pool, Unraid's default
+for a multi-device btrfs pool, btrfs then cannot tell which mirror copy is good, so a scrub neither
+detects nor repairs corruption in them.
+
+Upstream applies NOCOW with no way to decline it. This image makes it opt-in:
+
+| `OPENCLAW_SQLITE_NOCOW` | Existing databases | New databases (fresh install, new agent) |
+|---|---|---|
+| `false` (default) | stay copy-on-write | created copy-on-write |
+| `true` | rewritten as NOCOW by the startup Doctor | created NOCOW |
+
+Only `/config` on btrfs is affected. On Unraid that means an appdata share that lives only on a btrfs
+pool (*Secondary storage: None*). Through the `/mnt/user` FUSE layer the container sees `fuse`, and
+nothing happens either way.
+
+**With the default, expect these lines on every start.** The container prints a notice, then Doctor
+logs two lines per database: `SQLite store on btrfs without NOCOW … Run openclaw doctor --fix` and
+`SQLite NOCOW repair refused … fuser cannot inspect processes`. They are harmless; the databases
+are left as they are. Upstream has no setting to silence them.
+
+**Should you opt in?** For a typical single-user install, with databases of a few tens of MB on
+SSD, keep the checksums. NOCOW pays off for large stores with heavy write traffic, where commits
+get slow ([openclaw#192402](https://github.com/openclaw/openclaw/issues/192402)).
+
+**Opting in:** set `OPENCLAW_SQLITE_NOCOW=true` and restart. Before the gateway starts, Doctor
+rewrites each store and keeps the original next to it as `<dir>.nocow-backup-*`, plus
+`<dir>.nocow-snapshots-*`. Delete those once you're satisfied. On releases up to at least
+2026.11.3, Doctor converts the state database but refuses the agent databases with
+`store files are open (pids: N)`, where N is Doctor itself
+([openclaw#191957](https://github.com/openclaw/openclaw/issues/191957)). They stay copy-on-write until
+a release includes the fix. Setting the variable back to `false` does not undo the rewrite.
+
+**Checking, and going back to copy-on-write.** A `C` in `lsattr -d` output means NOCOW:
+
+```bash
+lsattr -d /mnt/cache/appdata/openclaw/.openclaw/state /mnt/cache/appdata/openclaw/.openclaw/agents/*/agent
+```
+
+Images before this setting existed created new databases NOCOW on btrfs, so a fresh install on a
+btrfs pool may already show `C`. To return a store to copy-on-write, stop the container, then for
+each directory showing `C`, on the host, from `<your /config host path>/.openclaw`:
+
+```bash
+d=state   # then agents/main/agent, and so on
+mv "$d" "$d.nocow" && mkdir "$d" && chown --reference="$d.nocow" "$d" && chmod --reference="$d.nocow" "$d" \
+  && cp -a --reflink=never "$d.nocow/." "$d/"
+```
+
+Files written into a directory without `C` are copy-on-write. Start the container with the default
+setting, check that `lsattr` no longer shows `C`, then delete the `.nocow` copies.
 
 ## Access
 
