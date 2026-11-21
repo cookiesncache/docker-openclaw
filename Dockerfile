@@ -17,7 +17,7 @@ FROM ${UPSTREAM_REF} AS upstream
 # base cannot move under us; Dependabot's docker ecosystem proposes bumps as a one-line PR.
 # It MUST stay the multi-arch INDEX digest, not a platform manifest (NOTES.md "Build
 # strategy"); `docker buildx imagetools inspect <tag>` prints the index digest first.
-FROM ghcr.io/linuxserver/baseimage-ubuntu:resolute@sha256:0fcb66011e543262765c5ce44d9b84cfd7ef467c173cd45821feec556833b68c
+FROM ghcr.io/linuxserver/baseimage-ubuntu:resolute@sha256:e044df9763cfadf3081e6b7a2e949809661c9e751b6ce65040075972c9b35587
 
 # HOME=/config so OpenClaw's $HOME-relative ~/.openclaw lands on the persistent volume.
 # LSIO_FIRST_PARTY=false: this is a custom/unofficial image on the LSIO base, so the base
